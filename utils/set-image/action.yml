@@ -23,3 +23,6 @@ runs:
 
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         echo "namespace=$NAMESPACE" >> "$GITHUB_OUTPUT"
+
+        echo "Image name: $IMAGE"
+        echo "Namespace: $NAMESPACE"

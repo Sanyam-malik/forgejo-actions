@@ -1,0 +1,42 @@
+name: Get Latest Tag
+description: Fetch the latest Git tag from a repository URL
+
+inputs:
+  repo_url:
+    description: Repository URL
+    required: true
+  token:
+    description: Auth token for private repositories
+    required: false
+    default: ""
+
+outputs:
+  tag:
+    description: Latest git tag
+    value: ${{ steps.get_tag.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Clone repository
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.token }}" ]; then
+          AUTH_URL=$(echo "${{ inputs.repo_url }}" | sed "s#https://#https://x-access-token:${{ inputs.token }}@#")
+        else
+          AUTH_URL="${{ inputs.repo_url }}"
+        fi
+
+        git clone --depth 1 --no-checkout "$AUTH_URL" repo
+        cd repo
+        git fetch --tags --force
+
+    - id: get_tag
+      name: Get latest tag
+      shell: bash
+      run: |
+        cd repo
+        TAG=$(git tag --sort=-v:refname | head -n 1)
+
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "Latest tag: $TAG"
