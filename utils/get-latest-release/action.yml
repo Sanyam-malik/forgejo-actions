@@ -1,0 +1,56 @@
+name: Get Latest Release Assets
+description: Fetch latest release assets from GitHub / Gitea / Forgejo compatible APIs
+
+inputs:
+  repo:
+    description: Repository URL
+    required: true
+
+  api_url:
+    description: API base URL (e.g. https://api.github.com or https://gitea.example.com/api/v1)
+    required: false
+    default: https://api.github.com
+
+  token:
+    description: API token
+    required: false
+    default: ""
+
+outputs:
+  tag:
+    description: Latest release tag
+    value: ${{ steps.release.outputs.tag }}
+
+  assets:
+    description: JSON array of assets
+    value: ${{ steps.release.outputs.assets }}
+
+runs:
+  using: composite
+  steps:
+    - id: release
+      shell: bash
+      run: |
+        REPO="${{ inputs.repo }}"
+        API="${{ inputs.api_url }}/repos/$REPO/releases/latest"
+        TOKEN="${{ inputs.token }}"
+
+        if [ -n "$TOKEN" ]; then
+          RESPONSE=$(curl -s -H "Authorization: token $TOKEN" "$API")
+        else
+          RESPONSE=$(curl -s "$API")
+        fi
+
+        TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
+
+        ASSETS=$(echo "$RESPONSE" | jq -c '[.assets[] | {
+          name: .name,
+          size: .size,
+          url: .browser_download_url
+        }]')
+
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "assets=$ASSETS" >> "$GITHUB_OUTPUT"
+
+        echo "Latest tag: $TAG"
+        echo "Assets: $ASSETS"
