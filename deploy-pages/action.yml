@@ -1,5 +1,5 @@
 name: Deploy to GitHub Pages
-description: Deploy static site to gh-pages branch
+description: Deploy static site to a branch
 
 inputs:
   site_path:
@@ -14,6 +14,11 @@ inputs:
     description: Git email
     required: true
 
+  target_branch:
+    description: Branch to deploy site
+    required: false
+    default: gh-pages
+
 runs:
   using: composite
   steps:
@@ -23,6 +28,7 @@ runs:
         set -e
 
         SITE_PATH="${{ inputs.site_path }}"
+        TARGET_BRANCH="${{ inputs.target_branch }}"
 
         git config --global user.email "${{ inputs.git_email }}"
         git config --global user.name "${{ inputs.git_user }}"
@@ -34,9 +40,9 @@ runs:
 
         cp -a "$SITE_PATH"/. /tmp/site-build/
 
-        echo "Switching to gh-pages branch"
+        echo "Switching to $TARGET_BRANCH branch"
 
-        git checkout --orphan gh-pages || git checkout gh-pages
+        git checkout --orphan "$TARGET_BRANCH" || git checkout "$TARGET_BRANCH"
         git rm -rf . || true
         git clean -fdx
 
@@ -55,6 +61,6 @@ runs:
 
         git add -A
 
-        git commit -m "Deploy to pages" || echo "No changes to commit"
+        git commit -m "Deploy to $TARGET_BRANCH" || echo "No changes to commit"
 
-        git push --force origin gh-pages
+        git push --force origin "$TARGET_BRANCH"
