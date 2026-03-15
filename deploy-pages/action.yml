@@ -30,7 +30,12 @@ runs:
         echo "Saving build output from $SITE_PATH"
 
         mkdir -p /tmp/site-build
-        cp -r "$SITE_PATH"/* /tmp/site-build/
+
+        # copy files safely without git metadata
+        tar -C "$SITE_PATH" \
+          --exclude='.git' \
+          --exclude='*.git*' \
+          -cf - . | tar -C /tmp/site-build -xf -
 
         echo "Switching to gh-pages branch"
 
@@ -40,12 +45,12 @@ runs:
 
         echo "Copying build files"
 
-        cp -r /tmp/site-build/* .
+        tar -C /tmp/site-build -cf - . | tar -xf -
 
         touch .nojekyll
 
         git add .
 
-        git commit -m "Deploy to pages"
+        git commit -m "Deploy to pages" || echo "No changes to commit"
 
         git push --force origin gh-pages
