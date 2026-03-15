@@ -1,0 +1,16 @@
+name: Build Hugo Site
+description: Build Hugo static website
+
+inputs:
+  base_url:
+    description: Hugo base URL
+    required: false
+    default: "/"
+
+runs:
+  using: composite
+  steps:
+    - name: Build site
+      shell: bash
+      run: |
+        hugo --minify --gc --baseURL "${{ inputs.base_url }}"

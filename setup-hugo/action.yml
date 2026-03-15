@@ -1,0 +1,32 @@
+name: Setup Hugo
+description: Install Hugo Extended from official release
+
+inputs:
+  hugo_version:
+    description: Hugo version
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Hugo
+      shell: bash
+      run: |
+        set -e
+
+        VERSION="${{ inputs.hugo_version }}"
+        ARCH="64bit"
+        OS="Linux"
+
+        echo "Installing Hugo ${VERSION}"
+
+        curl -L -o hugo.tar.gz \
+        https://github.com/gohugoio/hugo/releases/download/v${VERSION}/hugo_extended_${VERSION}_${OS}-${ARCH}.tar.gz
+
+        tar -xzf hugo.tar.gz
+
+        sudo mv hugo /usr/local/bin/hugo
+
+        hugo version
+
+        rm -f hugo.tar.gz LICENSE README.md

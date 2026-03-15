@@ -1,0 +1,51 @@
+name: Deploy to GitHub Pages
+description: Deploy static site to gh-pages branch
+
+inputs:
+  site_path:
+    description: Path to built site directory
+    required: true
+
+  git_user:
+    description: Git username
+    required: true
+
+  git_email:
+    description: Git email
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy
+      shell: bash
+      run: |
+        set -e
+
+        SITE_PATH="${{ inputs.site_path }}"
+
+        git config --global user.email "${{ inputs.git_email }}"
+        git config --global user.name "${{ inputs.git_user }}"
+
+        echo "Saving build output from $SITE_PATH"
+
+        mkdir -p /tmp/site-build
+        cp -r "$SITE_PATH"/* /tmp/site-build/
+
+        echo "Switching to gh-pages branch"
+
+        git checkout --orphan gh-pages
+        git rm -rf . || true
+        git clean -fdx
+
+        echo "Copying build files"
+
+        cp -r /tmp/site-build/* .
+
+        touch .nojekyll
+
+        git add .
+
+        git commit -m "Deploy to pages"
+
+        git push --force origin gh-pages
