@@ -2,6 +2,11 @@ name: Build Hugo Site
 description: Build Hugo static website
 
 inputs:
+  working_dir:
+    description: Directory containing Hugo site
+    required: false
+    default: "."
+
   base_url:
     description: Hugo base URL
     required: false
@@ -13,4 +18,8 @@ runs:
     - name: Build site
       shell: bash
       run: |
+        set -e
+
+        cd "${{ inputs.working_dir }}"
+
         hugo --minify --gc --baseURL "${{ inputs.base_url }}"

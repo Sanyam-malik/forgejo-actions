@@ -2,6 +2,11 @@ name: Build Angular Application
 description: Install dependencies and build Angular project
 
 inputs:
+  working_dir:
+    description: Directory containing Angular project
+    required: false
+    default: "."
+
   base_href:
     description: Angular base href
     required: false
@@ -23,6 +28,9 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
+        set -e
+        cd "${{ inputs.working_dir }}"
+
         if [ "${{ inputs.force_install }}" = "true" ]; then
           echo "Installing dependencies with --force"
           npm install --force
@@ -34,6 +42,9 @@ runs:
     - name: Build Angular application
       shell: bash
       run: |
+        set -e
+        cd "${{ inputs.working_dir }}"
+
         npm run build -- \
           --configuration "${{ inputs.build_configuration }}" \
           --base-href "${{ inputs.base_href }}"
