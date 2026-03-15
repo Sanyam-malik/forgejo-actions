@@ -1,0 +1,25 @@
+name: Docker Push
+description: Push docker image to registry
+
+inputs:
+  registry:
+    description: Registry URL
+    required: true
+  namespace:
+    description: Registry namespace
+    required: true
+  image:
+    description: Image name
+    required: true
+  tag:
+    description: Image tag
+    required: false
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        docker push \
+          "${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"

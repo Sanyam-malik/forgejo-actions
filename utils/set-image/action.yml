@@ -1,0 +1,25 @@
+name: Set Image Metadata
+description: Compute docker image name and namespace from repository
+
+outputs:
+  image:
+    description: Image name
+    value: ${{ steps.vars.outputs.image }}
+  namespace:
+    description: Namespace
+    value: ${{ steps.vars.outputs.namespace }}
+
+runs:
+  using: composite
+  steps:
+    - id: vars
+      shell: bash
+      run: |
+        IMAGE="${GITHUB_REPOSITORY##*/}"
+        IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+
+        NAMESPACE="${GITHUB_REPOSITORY%%/*}"
+        NAMESPACE=$(echo "$NAMESPACE" | tr '[:upper:]' '[:lower:]')
+
+        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        echo "namespace=$NAMESPACE" >> "$GITHUB_OUTPUT"

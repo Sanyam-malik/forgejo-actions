@@ -1,0 +1,23 @@
+name: Docker Login
+description: Login to Docker / Forgejo container registry
+
+inputs:
+  registry:
+    description: Container registry URL
+    required: true
+  username:
+    description: Registry username
+    required: true
+  token:
+    description: Registry token/password
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo "${{ inputs.token }}" | docker login \
+          "${{ inputs.registry }}" \
+          -u "${{ inputs.username }}" \
+          --password-stdin

@@ -1,0 +1,38 @@
+name: Forgejo Link Package
+description: Link container package to repository
+
+inputs:
+  registry_api:
+    description: Forgejo registry API endpoint
+    required: true
+  namespace:
+    description: Namespace
+    required: true
+  image:
+    description: Image name
+    required: true
+  username:
+    description: Forgejo username
+    required: true
+  token:
+    description: Forgejo token
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
+
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          -u "${{ inputs.username }}:${{ inputs.token }}" \
+          "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}/-/link/$REPO_NAME")
+
+        if [ "$HTTP_STATUS" -eq 201 ]; then
+          echo "Package linked successfully."
+        elif [ "$HTTP_STATUS" -eq 409 ]; then
+          echo "Package already linked."
+        else
+          echo "Unexpected HTTP status: $HTTP_STATUS"
+        fi

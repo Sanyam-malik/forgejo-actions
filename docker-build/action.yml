@@ -1,0 +1,26 @@
+name: Docker Build
+description: Build Docker image
+
+inputs:
+  registry:
+    description: Registry URL
+    required: true
+  namespace:
+    description: Registry namespace
+    required: true
+  image:
+    description: Image name
+    required: true
+  tag:
+    description: Image tag
+    required: false
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        docker build \
+          -t "${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+          .
