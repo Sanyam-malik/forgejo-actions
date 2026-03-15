@@ -27,30 +27,21 @@ runs:
         git config --global user.email "${{ inputs.git_email }}"
         git config --global user.name "${{ inputs.git_user }}"
 
-        echo "Saving build output from $SITE_PATH"
-
         mkdir -p /tmp/site-build
 
-        # copy files safely without git metadata
-        tar -C "$SITE_PATH" \
-          --exclude='.git' \
-          --exclude='*.git*' \
-          -cf - . | tar -C /tmp/site-build -xf -
+        cp -r "$SITE_PATH"/. /tmp/site-build/
 
-        echo "Switching to gh-pages branch"
+        # remove nested git repositories
+        find /tmp/site-build -name ".git" -type d -exec rm -rf {} +
 
         git checkout --orphan gh-pages
         git rm -rf . || true
         git clean -fdx
 
-        echo "Copying build files"
-
-        tar -C /tmp/site-build -cf - . | tar -xf -
+        cp -r /tmp/site-build/. .
 
         touch .nojekyll
 
         git add .
-
         git commit -m "Deploy to pages" || echo "No changes to commit"
-
         git push --force origin gh-pages
