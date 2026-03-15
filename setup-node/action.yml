@@ -3,7 +3,7 @@ description: Install Node.js with optional pkg-cache mirror
 
 inputs:
   node_version:
-    description: Node.js version
+    description: Node.js major version (e.g. 20, 21)
     required: false
     default: "20"
 
@@ -20,7 +20,7 @@ runs:
       run: |
         set -e
 
-        VERSION="${{ inputs.node_version }}"
+        MAJOR="${{ inputs.node_version }}"
         PKG_CACHE="${{ inputs.pkg_cache }}"
 
         ARCH=$(uname -m)
@@ -38,23 +38,34 @@ runs:
           echo "Using official Node distribution"
         fi
 
-        NODE_DIST="node-v${VERSION}-linux-${ARCH}"
+        echo "Detecting latest Node ${MAJOR}.x version..."
 
-        DOWNLOAD_URL="${BASE_URL}/dist/v${VERSION}/${NODE_DIST}.tar.xz"
+        VERSION=$(curl -s "${BASE_URL}/dist/index.json" \
+          | grep -oP '"version":\s*"\K[^"]+' \
+          | grep "^v${MAJOR}\." \
+          | head -n 1)
 
-        echo "Downloading Node $VERSION"
-        echo "URL: $DOWNLOAD_URL"
+        if [ -z "$VERSION" ]; then
+          echo "Could not detect Node ${MAJOR} version"
+          exit 1
+        fi
+
+        echo "Latest version detected: $VERSION"
+
+        NODE_DIST="node-${VERSION}-linux-${ARCH}"
+        DOWNLOAD_URL="${BASE_URL}/dist/${VERSION}/${NODE_DIST}.tar.xz"
+
+        echo "Downloading $DOWNLOAD_URL"
 
         curl -L --retry 5 --retry-delay 5 \
           -o node.tar.xz \
           "$DOWNLOAD_URL"
 
         tar -xf node.tar.xz
-
         mv "$NODE_DIST" "$HOME/.node"
 
         echo "$HOME/.node/bin" >> "$GITHUB_PATH"
-        echo "PATH=$HOME/.node/bin:$PATH" >> $GITHUB_ENV
+        echo "PATH=$HOME/.node/bin:$PATH" >> "$GITHUB_ENV"
         export PATH="$HOME/.node/bin:$PATH"
 
         echo "Node installed at: $HOME/.node/bin/node"
