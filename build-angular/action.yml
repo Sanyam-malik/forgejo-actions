@@ -1,0 +1,39 @@
+name: Build Angular Application
+description: Install dependencies and build Angular project
+
+inputs:
+  base_href:
+    description: Angular base href
+    required: false
+    default: "/"
+
+  build_configuration:
+    description: Angular build configuration
+    required: false
+    default: "production"
+
+  force_install:
+    description: Force npm dependency installation
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ "${{ inputs.force_install }}" = "true" ]; then
+          echo "Installing dependencies with --force"
+          npm install --force
+        else
+          echo "Installing dependencies"
+          npm install
+        fi
+
+    - name: Build Angular application
+      shell: bash
+      run: |
+        npm run build -- \
+          --configuration "${{ inputs.build_configuration }}" \
+          --base-href "${{ inputs.base_href }}"

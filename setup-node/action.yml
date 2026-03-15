@@ -1,0 +1,64 @@
+name: Setup Node
+description: Install Node.js with optional pkg-cache mirror
+
+inputs:
+  node_version:
+    description: Node.js version
+    required: false
+    default: "20"
+
+  pkg_cache:
+    description: pkg-cache hostname
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install Node
+      shell: bash
+      run: |
+        set -e
+
+        VERSION="${{ inputs.node_version }}"
+        PKG_CACHE="${{ inputs.pkg_cache }}"
+
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+          ARCH="x64"
+        elif [ "$ARCH" = "aarch64" ]; then
+          ARCH="arm64"
+        fi
+
+        if [ -n "$PKG_CACHE" ]; then
+          BASE_URL="https://${PKG_CACHE}/nodejs.org"
+          echo "Using pkg-cache mirror: $BASE_URL"
+        else
+          BASE_URL="https://nodejs.org"
+          echo "Using official Node distribution"
+        fi
+
+        NODE_DIST="node-v${VERSION}-linux-${ARCH}"
+
+        DOWNLOAD_URL="${BASE_URL}/dist/v${VERSION}/${NODE_DIST}.tar.xz"
+
+        echo "Downloading Node $VERSION"
+        echo "URL: $DOWNLOAD_URL"
+
+        curl -L --retry 5 --retry-delay 5 \
+          -o node.tar.xz \
+          "$DOWNLOAD_URL"
+
+        tar -xf node.tar.xz
+
+        mv "$NODE_DIST" "$HOME/.node"
+
+        echo "$HOME/.node/bin" >> "$GITHUB_PATH"
+        echo "PATH=$HOME/.node/bin:$PATH" >> $GITHUB_ENV
+        export PATH="$HOME/.node/bin:$PATH"
+
+        echo "Node installed at: $HOME/.node/bin/node"
+        echo "Detected node path: $(command -v node)"
+
+        node -v
+        npm -v
