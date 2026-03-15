@@ -1,0 +1,63 @@
+name: Clone Git Repository
+description: Clone a git repository with optional shallow clone
+
+inputs:
+  repo:
+    description: Repository URL
+    required: true
+
+  ref:
+    description: Branch, tag, or commit to checkout
+    required: false
+    default: ""
+
+  depth:
+    description: Clone depth (0 = full clone)
+    required: false
+    default: "1"
+
+  token:
+    description: Authentication token (optional)
+    required: false
+    default: ""
+
+  directory:
+    description: Directory to clone into
+    required: false
+    default: "repo"
+
+runs:
+  using: composite
+  steps:
+    - name: Clone repository
+      shell: bash
+      run: |
+        set -e
+
+        REPO="${{ inputs.repo }}"
+        REF="${{ inputs.ref }}"
+        DEPTH="${{ inputs.depth }}"
+        TOKEN="${{ inputs.token }}"
+        DIR="${{ inputs.directory }}"
+
+        if [ -n "$TOKEN" ]; then
+          REPO=$(echo "$REPO" | sed "s#https://#https://${TOKEN}@#")
+        fi
+
+        if [ "$DEPTH" = "0" ]; then
+          echo "Performing full clone"
+          git clone "$REPO" "$DIR"
+        else
+          echo "Performing shallow clone (depth=$DEPTH)"
+          git clone --depth "$DEPTH" "$REPO" "$DIR"
+        fi
+
+        cd "$DIR"
+
+        if [ -n "$REF" ]; then
+          echo "Checking out $REF"
+          git checkout "$REF"
+        fi
+
+        echo "Clone complete:"
+        git log -1 --oneline
