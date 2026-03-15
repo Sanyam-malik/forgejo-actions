@@ -26,6 +26,11 @@ inputs:
     required: false
     default: "repo"
 
+outputs:
+  repo_dir:
+    description: Path to cloned repository
+    value: ${{ steps.clone.outputs.repo_dir }}
+
 runs:
   using: composite
   steps:
