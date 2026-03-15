@@ -59,8 +59,8 @@ runs:
 
         echo "gradle_version=$VERSION" >> "$GITHUB_OUTPUT"
 
-        # make available in this step
-        export PATH="$GRADLE_HOME/bin:$PATH"
+        echo "PATH=$HOME/.gradle-dist/bin:$PATH" >> $GITHUB_ENV
+        export PATH=$HOME/.gradle-dist/bin:$PATH
 
         echo "Gradle installed at: $GRADLE_HOME/bin/gradle"
         echo "Detected gradle path: $(command -v gradle)"
