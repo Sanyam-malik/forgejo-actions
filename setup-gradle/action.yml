@@ -54,11 +54,9 @@ runs:
         unzip -q gradle.zip
         mv "gradle-${VERSION}" "$HOME/.gradle-dist"
 
-        echo "GRADLE_HOME=$HOME/.gradle-dist" >> "$GITHUB_ENV"
-        echo "$HOME/.gradle-dist/bin" >> "$GITHUB_PATH"
-
         echo "gradle_version=$VERSION" >> "$GITHUB_OUTPUT"
 
+        echo "GRADLE_HOME=$HOME/.gradle-dist" >> $GITHUB_ENV
         echo "PATH=$HOME/.gradle-dist/bin:$PATH" >> $GITHUB_ENV
         export PATH=$HOME/.gradle-dist/bin:$PATH
 
