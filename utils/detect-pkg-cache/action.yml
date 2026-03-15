@@ -1,0 +1,31 @@
+name: Detect Package Cache
+description: Detect package cache hostname from server URL
+
+inputs:
+  server_url:
+    description: Server URL used to derive cache domain
+    required: false
+    default: ${{ github.server_url }}
+
+outputs:
+  pkg_cache:
+    description: Package cache hostname
+    value: ${{ steps.detect.outputs.pkg_cache }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      run: |
+        DOMAIN="${{ inputs.server_url }}"
+        DOMAIN=${DOMAIN#https://}
+        DOMAIN=${DOMAIN#http://}
+        DOMAIN=${DOMAIN%%:*}
+
+        ROOT_DOMAIN=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+        PKG_CACHE="pkg-cache.${ROOT_DOMAIN}"
+
+        echo "pkg_cache=$PKG_CACHE" >> "$GITHUB_OUTPUT"
+
+        echo "Detected pkg-cache: $PKG_CACHE"

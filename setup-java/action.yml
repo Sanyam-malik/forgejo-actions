@@ -1,0 +1,52 @@
+name: Setup Java
+description: Install OpenJDK and configure JAVA_HOME on multiple Linux distributions
+
+inputs:
+  java_version:
+    description: Java version to install
+    required: false
+    default: "17"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Java
+      shell: bash
+      run: |
+        set -e
+
+        JAVA_VERSION="${{ inputs.java_version }}"
+
+        if command -v apt-get >/dev/null 2>&1; then
+          echo "Detected APT system"
+          sudo apt-get update
+          sudo apt-get install -y openjdk-${JAVA_VERSION}-jdk curl unzip
+
+        elif command -v dnf >/dev/null 2>&1; then
+          echo "Detected DNF system"
+          sudo dnf install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+
+        elif command -v yum >/dev/null 2>&1; then
+          echo "Detected YUM system"
+          sudo yum install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+
+        elif command -v apk >/dev/null 2>&1; then
+          echo "Detected Alpine system"
+          sudo apk add --no-cache openjdk${JAVA_VERSION} curl unzip
+
+        elif command -v zypper >/dev/null 2>&1; then
+          echo "Detected Zypper system"
+          sudo zypper install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+
+        else
+          echo "Unsupported distribution"
+          exit 1
+        fi
+
+        JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
+
+        echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+        echo "$JAVA_HOME/bin" >> $GITHUB_PATH
+
+        echo "JAVA_HOME=$JAVA_HOME"
+        java -version

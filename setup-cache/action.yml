@@ -1,0 +1,73 @@
+name: Setup Package Cache
+description: Rewrite system package repositories to use a package cache
+
+inputs:
+  pkg_cache:
+    description: Package cache hostname
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Configure package cache
+      shell: bash
+      run: |
+        set -e
+
+        PKG_CACHE="${{ inputs.pkg_cache }}"
+        echo "Using package cache: $PKG_CACHE"
+
+        rewrite_urls () {
+          FILE="$1"
+          sudo sed -i -E "s|https?://([^/ ]+)|https://${PKG_CACHE}/\1|g" "$FILE"
+        }
+
+        if command -v apt-get >/dev/null 2>&1; then
+          echo "Detected APT system"
+
+          rewrite_sources_file () {
+            FILE="$1"
+            sudo sed -i -E \
+              "s|URIs: https?://([^/ ]+)|URIs: https://${PKG_CACHE}/\1|g" "$FILE"
+          }
+
+          find /etc/apt -type f -name "*.list" -print0 | while IFS= read -r -d '' f; do
+            rewrite_urls "$f"
+          done
+
+          find /etc/apt -type f -name "*.sources" -print0 | while IFS= read -r -d '' f; do
+            rewrite_sources_file "$f"
+          done
+
+          grep -R "$PKG_CACHE" /etc/apt || true
+
+        elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+          echo "Detected DNF/YUM system"
+
+          find /etc/yum.repos.d -type f -name "*.repo" -print0 | while IFS= read -r -d '' f; do
+            rewrite_urls "$f"
+          done
+
+          grep -R "$PKG_CACHE" /etc/yum.repos.d || true
+
+        elif command -v apk >/dev/null 2>&1; then
+          echo "Detected Alpine system"
+
+          sudo sed -i -E \
+            "s|https?://([^/ ]+)|https://${PKG_CACHE}/\1|g" /etc/apk/repositories
+
+          cat /etc/apk/repositories
+
+        elif command -v zypper >/dev/null 2>&1; then
+          echo "Detected Zypper system"
+
+          find /etc/zypp/repos.d -type f -name "*.repo" -print0 | while IFS= read -r -d '' f; do
+            rewrite_urls "$f"
+          done
+
+          grep -R "$PKG_CACHE" /etc/zypp/repos.d || true
+
+        else
+          echo "Unsupported package manager"
+          exit 1
+        fi
