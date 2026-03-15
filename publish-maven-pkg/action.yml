@@ -1,0 +1,74 @@
+name: Publish Maven Package
+description: Publish Gradle artifacts to a Maven registry
+
+inputs:
+  registry:
+    description: Registry hostname
+    required: true
+
+  user:
+    description: Registry username
+    required: true
+
+  token:
+    description: Registry token
+    required: true
+
+outputs:
+  package_url:
+    description: Maven repository URL
+    value: ${{ steps.publish.outputs.package_url }}
+
+runs:
+  using: composite
+  steps:
+    - id: publish
+      name: Publish package
+      shell: bash
+      run: |
+        set -e
+
+        OWNER="${GITHUB_REPOSITORY%%/*}"
+        OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+
+        REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
+
+        REGISTRY="${{ inputs.registry }}"
+        USER="${{ inputs.user }}"
+        TOKEN="${{ inputs.token }}"
+
+        PACKAGE_URL="https://${REGISTRY}/api/packages/${OWNER}/maven"
+
+        export MAVEN_PACKAGE_URL="$PACKAGE_URL"
+        export MAVEN_USER="$USER"
+        export MAVEN_TOKEN="$TOKEN"
+
+        echo "Detected package repository: $PACKAGE_URL"
+        echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
+
+        eval "$(gradle -q printMavenCoordinates)"
+
+        echo "Publishing $GROUP_ID:$ARTIFACT_ID:$VERSION"
+
+        DELETE_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${GROUP_ID}:${ARTIFACT_ID}/${VERSION}"
+
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+          -X DELETE \
+          -u "${USER}:${TOKEN}" \
+          "$DELETE_URL")
+
+        if [ "$STATUS" != "204" ] && [ "$STATUS" != "404" ]; then
+          echo "Delete failed (HTTP $STATUS)"
+          exit 1
+        fi
+
+        gradle publish
+
+        LINK_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${GROUP_ID}:${ARTIFACT_ID}/-/link/${REPO_NAME}"
+
+        curl -s -o /dev/null \
+          -X POST \
+          -u "${USER}:${TOKEN}" \
+          "$LINK_URL"
+
+        echo "Publish complete."
