@@ -31,10 +31,6 @@ runs:
         cd repo
         git fetch --tags --force
 
-    - id: get_tag
-      name: Get latest tag
-      shell: bash
-      run: |
         cd repo
         TAG=$(git tag --sort=-v:refname | head -n 1)
 
