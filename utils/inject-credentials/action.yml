@@ -1,0 +1,41 @@
+name: Inject Artifact Credentials
+description: Replace artifact URL and token placeholders in a file
+
+inputs:
+  file:
+    description: File to update
+    required: true
+
+  artifact_url_placeholder:
+    description: Placeholder for artifact URL
+    required: true
+
+  artifact_token_placeholder:
+    description: Placeholder for artifact token
+    required: true
+
+  artifact_url:
+    description: Artifact repository URL
+    required: true
+
+  artifact_token:
+    description: Artifact access token
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Replace artifact placeholders
+      shell: bash
+      run: |
+        FILE="${{ inputs.file }}"
+
+        if [ ! -f "$FILE" ]; then
+          echo "File not found: $FILE"
+          exit 1
+        fi
+
+        sed -i \
+          -e "s|${{ inputs.artifact_url_placeholder }}|${{ inputs.artifact_url }}|g" \
+          -e "s|${{ inputs.artifact_token_placeholder }}|${{ inputs.artifact_token }}|g" \
+          "$FILE"
