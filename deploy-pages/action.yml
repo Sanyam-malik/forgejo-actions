@@ -27,21 +27,34 @@ runs:
         git config --global user.email "${{ inputs.git_email }}"
         git config --global user.name "${{ inputs.git_user }}"
 
+        echo "Preparing build output"
+
+        rm -rf /tmp/site-build
         mkdir -p /tmp/site-build
 
-        cp -r "$SITE_PATH"/. /tmp/site-build/
+        cp -a "$SITE_PATH"/. /tmp/site-build/
 
-        # remove nested git repositories
-        find /tmp/site-build -name ".git" -type d -exec rm -rf {} +
+        echo "Switching to gh-pages branch"
 
-        git checkout --orphan gh-pages
+        git checkout --orphan gh-pages || git checkout gh-pages
         git rm -rf . || true
         git clean -fdx
 
-        cp -r /tmp/site-build/. .
+        echo "Copying build files"
+        cp -a /tmp/site-build/. .
+
+        echo "Detecting nested git repositories"
+
+        find . -type d -name ".git" -not -path "./.git" | while read gitdir; do
+          repo=$(dirname "$gitdir")
+          echo "Removing embedded repo: $repo"
+          rm -rf "$repo"
+        done
 
         touch .nojekyll
 
-        git add .
+        git add -A
+
         git commit -m "Deploy to pages" || echo "No changes to commit"
+
         git push --force origin gh-pages
