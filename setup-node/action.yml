@@ -73,3 +73,18 @@ runs:
 
         node -v
         npm -v
+
+        # Configure npm registry to use pkg-cache
+        if [ -n "$PKG_CACHE" ]; then
+          NPM_REGISTRY="https://${PKG_CACHE}/registry.npmjs.org"
+
+          echo "Configuring npm to use pkg-cache registry: $NPM_REGISTRY"
+
+          npm config set registry "$NPM_REGISTRY"
+
+          # Also create npmrc so future shells respect it
+          echo "registry=$NPM_REGISTRY" >> "$HOME/.npmrc"
+
+          echo "npm registry configured:"
+          npm config get registry
+        fi
