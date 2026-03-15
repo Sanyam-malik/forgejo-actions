@@ -59,5 +59,5 @@ runs:
           git checkout "$REF"
         fi
 
-        echo "Clone complete:"
-        git log -1 --oneline
+        echo "repo_dir=$PWD" >> "$GITHUB_OUTPUT"
+        echo "Cloned repository path: $PWD"
