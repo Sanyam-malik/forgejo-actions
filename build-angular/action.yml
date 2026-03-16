@@ -22,10 +22,15 @@ inputs:
     required: false
     default: "false"
 
+  output_dir:
+    description: Custom output directory (optional)
+    required: false
+    default: ""
+
 outputs:
   output_dir:
     description: Angular build output directory
-    value: ${{ steps.detect-output.outputs.output_dir }}
+    value: ${{ steps.build.outputs.output_dir }}
 
 runs:
   using: composite
@@ -44,17 +49,32 @@ runs:
           npm install
         fi
 
-        npm run build -- \
-          --configuration "${{ inputs.build_configuration }}" \
-          --base-href "${{ inputs.base_href }}"
+        if [ -n "${{ inputs.output_dir }}" ]; then
+          echo "Using custom output directory: ${{ inputs.output_dir }}"
 
-        OUTPUT_DIR=$(find dist -type f -name "index.html" -exec dirname {} \; | head -n 1)
+          npm run build -- \
+            --configuration "${{ inputs.build_configuration }}" \
+            --base-href "${{ inputs.base_href }}" \
+            --output-path "${{ inputs.output_dir }}"
 
-        if [ -z "$OUTPUT_DIR" ]; then
-          echo "❌ Could not locate Angular build output directory."
-          exit 1
+          OUTPUT_DIR="${{ inputs.output_dir }}"
+
+        else
+          echo "No output_dir provided. Using Angular default and detecting output directory."
+
+          npm run build -- \
+            --configuration "${{ inputs.build_configuration }}" \
+            --base-href "${{ inputs.base_href }}"
+
+          INDEX_FILE=$(find dist -type f -name "index.html" -print -quit)
+
+          if [ -z "$INDEX_FILE" ]; then
+            echo "❌ Could not locate Angular build output directory."
+            exit 1
+          fi
+
+          OUTPUT_DIR=$(dirname "$INDEX_FILE")
         fi
 
         echo "Found build output directory: $OUTPUT_DIR"
-
         echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
