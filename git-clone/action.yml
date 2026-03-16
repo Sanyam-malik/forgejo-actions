@@ -1,5 +1,5 @@
 name: Clone Git Repository
-description: Clone a git repository with optional shallow clone
+description: Clone a git repository supporting branch, tag, commit, or PR refs with optional shallow clone
 
 inputs:
   repo:
@@ -7,7 +7,7 @@ inputs:
     required: true
 
   ref:
-    description: Branch, tag, or commit to checkout
+    description: Branch, tag, commit SHA, or ref
     required: false
     default: ""
 
@@ -34,7 +34,8 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Clone repository
+    - id: clone
+      name: Clone repository
       shell: bash
       run: |
         set -e
@@ -49,20 +50,47 @@ runs:
           REPO=$(echo "$REPO" | sed "s#https://#https://${TOKEN}@#")
         fi
 
-        if [ "$DEPTH" = "0" ]; then
-          echo "Performing full clone"
-          git clone "$REPO" "$DIR"
+        echo "Repository: $REPO"
+        echo "Ref: ${REF:-default}"
+        echo "Depth: $DEPTH"
+        echo "Directory: $DIR"
+
+        # If no ref specified use normal clone
+        if [ -z "$REF" ]; then
+          if [ "$DEPTH" = "0" ]; then
+            echo "Performing full clone"
+            git clone "$REPO" "$DIR"
+          else
+            echo "Performing shallow clone (depth=$DEPTH)"
+            git clone --depth "$DEPTH" "$REPO" "$DIR"
+          fi
+
+          cd "$DIR"
+
         else
-          echo "Performing shallow clone (depth=$DEPTH)"
-          git clone --depth "$DEPTH" "$REPO" "$DIR"
+          echo "Cloning specific ref: $REF"
+
+          mkdir -p "$DIR"
+          cd "$DIR"
+
+          git init
+
+          git remote add origin "$REPO"
+
+          if [ "$DEPTH" = "0" ]; then
+            echo "Fetching full history for $REF"
+            git fetch origin "$REF"
+          else
+            echo "Fetching shallow history (depth=$DEPTH) for $REF"
+            git fetch --depth "$DEPTH" origin "$REF"
+          fi
+
+          git checkout FETCH_HEAD
         fi
 
-        cd "$DIR"
-
-        if [ -n "$REF" ]; then
-          echo "Checking out $REF"
-          git checkout "$REF"
-        fi
+        echo "Repository cloned successfully"
+        echo "Current commit:"
+        git log -1 --oneline
 
         echo "repo_dir=$PWD" >> "$GITHUB_OUTPUT"
         echo "Cloned repository path: $PWD"
