@@ -29,7 +29,8 @@ runs:
       id: build
       shell: bash
       run: |
-        set -e
+        set -euo pipefail
+
         cd "${{ inputs.working_dir }}"
 
         if [ -n "${{ inputs.output_dir }}" ]; then
@@ -44,19 +45,44 @@ runs:
           OUTPUT_DIR="${{ inputs.output_dir }}"
 
         else
-          echo "No output_dir provided. Using Hugo default and detecting output directory."
+          echo "No output_dir provided. Running Hugo with default output."
 
-          hugo --minify --gc --baseURL "${{ inputs.base_url }}"
+          hugo \
+            --minify \
+            --gc \
+            --baseURL "${{ inputs.base_url }}"
 
-          INDEX_FILE=$(find public -type f -name "index.html" -print -quit)
-
-          if [ -z "$INDEX_FILE" ]; then
-            echo "❌ Could not locate Hugo build output directory."
+          # Validate Hugo output
+          if [ ! -d "public" ]; then
+            echo "❌ Hugo build did not produce the 'public' directory."
             exit 1
           fi
 
-          OUTPUT_DIR=$(dirname "$INDEX_FILE")
+          # Case 1: Normal Hugo root index
+          if [ -f "public/index.html" ]; then
+            echo "Detected root index.html"
+            OUTPUT_DIR="public"
+
+          else
+            echo "Root index.html not found. Searching subdirectories..."
+
+            INDEX_FILE=$(
+              find public -type f -name "index.html" \
+                ! -path "public/index.html" \
+                | sort \
+                | head -n 1
+            )
+
+            if [ -z "$INDEX_FILE" ]; then
+              echo "❌ No index.html found anywhere inside 'public'."
+              echo "Debugging directory structure:"
+              find public -maxdepth 3 -print
+              exit 1
+            fi
+
+            OUTPUT_DIR=$(dirname "$INDEX_FILE")
+          fi
         fi
 
         echo "Found build output directory: $OUTPUT_DIR"
-        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+        echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"

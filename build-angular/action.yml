@@ -35,17 +35,20 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install dependencies
+    - name: Install dependencies and build
+      id: build
       shell: bash
       run: |
-        set -e
+        set -euo pipefail
+
         cd "${{ inputs.working_dir }}"
 
+        echo "Installing dependencies"
+
         if [ "${{ inputs.force_install }}" = "true" ]; then
-          echo "Installing dependencies with --force"
+          echo "Using npm install --force"
           npm install --force
         else
-          echo "Installing dependencies"
           npm install
         fi
 
@@ -60,21 +63,43 @@ runs:
           OUTPUT_DIR="${{ inputs.output_dir }}"
 
         else
-          echo "No output_dir provided. Using Angular default and detecting output directory."
+          echo "No output_dir provided. Running Angular build with default output."
 
           npm run build -- \
             --configuration "${{ inputs.build_configuration }}" \
             --base-href "${{ inputs.base_href }}"
 
-          INDEX_FILE=$(find dist -type f -name "index.html" -print -quit)
-
-          if [ -z "$INDEX_FILE" ]; then
-            echo "❌ Could not locate Angular build output directory."
+          # Ensure dist exists
+          if [ ! -d "dist" ]; then
+            echo "❌ Angular build did not produce the 'dist' directory."
             exit 1
           fi
 
-          OUTPUT_DIR=$(dirname "$INDEX_FILE")
+          # Case 1: dist/index.html exists
+          if [ -f "dist/index.html" ]; then
+            echo "Detected root index.html"
+            OUTPUT_DIR="dist"
+
+          else
+            echo "Root index.html not found. Searching subdirectories..."
+
+            INDEX_FILE=$(
+              find dist -type f -name "index.html" \
+                ! -path "dist/index.html" \
+                | sort \
+                | head -n 1
+            )
+
+            if [ -z "$INDEX_FILE" ]; then
+              echo "❌ No index.html found inside dist."
+              echo "Debugging directory structure:"
+              find dist -maxdepth 3 -print
+              exit 1
+            fi
+
+            OUTPUT_DIR=$(dirname "$INDEX_FILE")
+          fi
         fi
 
-        echo "Found build output directory: $OUTPUT_DIR"
-        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+        echo "Detected build output directory: $OUTPUT_DIR"
+        echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
