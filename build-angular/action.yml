@@ -22,6 +22,11 @@ inputs:
     required: false
     default: "false"
 
+outputs:
+  output_dir:
+    description: Angular build output directory
+    value: ${{ steps.detect-output.outputs.output_dir }}
+
 runs:
   using: composite
   steps:
@@ -38,9 +43,18 @@ runs:
           echo "Installing dependencies"
           npm install
         fi
-        
-        cd "${{ inputs.working_dir }}"
 
         npm run build -- \
           --configuration "${{ inputs.build_configuration }}" \
           --base-href "${{ inputs.base_href }}"
+
+        OUTPUT_DIR=$(find dist -type f -name "index.html" -exec dirname {} \; | head -n 1)
+
+        if [ -z "$OUTPUT_DIR" ]; then
+          echo "❌ Could not locate Angular build output directory."
+          exit 1
+        fi
+
+        echo "Found build output directory: $OUTPUT_DIR"
+
+        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
