@@ -23,7 +23,14 @@ runs:
       run: |
         IMAGE="${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
 
+        echo "Preparing to push Docker image: $IMAGE"
+
+        echo "Pushing image to registry..."
         docker push "$IMAGE"
 
-        # Remove only this image locally
+        echo "Image pushed successfully."
+
+        echo "Removing local image to free space..."
         docker rmi "$IMAGE" || true
+
+        echo "Cleanup complete."
