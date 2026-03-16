@@ -71,8 +71,8 @@ runs:
         echo "Node installed at: $HOME/.node/bin/node"
         echo "Detected node path: $(command -v node)"
 
-        node -v
-        npm -v
+        echo "Node Version": node -v
+        echo "NPM Version": npm -v
 
         # Configure npm registry to use pkg-cache
         if [ -n "$PKG_CACHE" ]; then
@@ -85,5 +85,5 @@ runs:
           # Also create npmrc so future shells respect it
           echo "registry=$NPM_REGISTRY" >> "$HOME/.npmrc"
 
-          echo "npm registry configured"
+          echo "npm registry configured": $NPM_REGISTRY
         fi
