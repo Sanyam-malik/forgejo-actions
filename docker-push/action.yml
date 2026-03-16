@@ -21,5 +21,9 @@ runs:
   steps:
     - shell: bash
       run: |
-        docker push "${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
-        docker system prune -af || true
+        IMAGE="${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
+
+        docker push "$IMAGE"
+
+        # Remove only this image locally
+        docker rmi "$IMAGE" || true
