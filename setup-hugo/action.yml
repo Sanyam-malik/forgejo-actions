@@ -28,9 +28,15 @@ runs:
         if [ -n "$PKG_CACHE" ]; then
           BASE_URL="https://${PKG_CACHE}/github.com/gohugoio/hugo"
           echo "Using pkg-cache mirror: $BASE_URL"
+
+          # Configure Go proxy for Hugo modules
+          echo "GOPROXY=https://${PKG_CACHE}/proxy.golang.org,direct" >> $GITHUB_ENV
+          echo "GOSUMDB=sum.golang.org" >> $GITHUB_ENV
+
+          echo "Configured Go module proxy via pkg-cache"
         else
           BASE_URL="https://github.com/gohugoio/hugo"
-          echo "Using official Hugo releases: $BASE_URL"
+          echo "Using official Hugo releases"
         fi
 
         DOWNLOAD_URL="${BASE_URL}/releases/download/v${VERSION}/hugo_extended_${VERSION}_${OS}-${ARCH}.tar.gz"
