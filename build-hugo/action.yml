@@ -12,6 +12,11 @@ inputs:
     required: false
     default: "/"
 
+outputs:
+  output_dir:
+    description: Hugo build output directory
+    value: ${{ steps.detect-output.outputs.output_dir }}
+
 runs:
   using: composite
   steps:
@@ -19,7 +24,16 @@ runs:
       shell: bash
       run: |
         set -e
-
         cd "${{ inputs.working_dir }}"
 
         hugo --minify --gc --baseURL "${{ inputs.base_url }}"
+
+        OUTPUT_DIR=$(find . -type f -name "index.html" -not -path "./node_modules/*" -exec dirname {} \; | head -n 1)
+
+        if [ -z "$OUTPUT_DIR" ]; then
+          echo "❌ Could not locate Hugo build output directory."
+          exit 1
+        fi
+
+        echo "Found build output directory: $OUTPUT_DIR"
+        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
