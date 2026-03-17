@@ -19,7 +19,9 @@ runs:
       run: |
         set -e
 
+        PKG_CACHE="${{ inputs.pkg_cache }}"
         VERSION="${{ inputs.hugo_version }}"
+        
         ARCH=$(uname -m)
         if [ "$ARCH" = "x86_64" ]; then
           ARCH="amd64"
