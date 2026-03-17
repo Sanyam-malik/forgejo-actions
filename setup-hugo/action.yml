@@ -6,6 +6,11 @@ inputs:
     description: Hugo version
     required: true
 
+  pkg_cache:
+    description: Package cache hostname
+    required: false
+    default: ""
+
 runs:
   using: composite
   steps:
