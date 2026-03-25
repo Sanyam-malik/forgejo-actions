@@ -4,6 +4,8 @@ on:
   workflow_dispatch:  # manual trigger
   # push:
   #   branches: [main]  # uncomment if you want auto-run on main pushes
+permissions:
+  contents: write
 
 jobs:
   retag:
