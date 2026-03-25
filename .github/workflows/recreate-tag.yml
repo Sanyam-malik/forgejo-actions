@@ -1,0 +1,38 @@
+name: Recreate v1 Tag
+
+on:
+  workflow_dispatch:  # manual trigger
+  # push:
+  #   branches: [main]  # uncomment if you want auto-run on main pushes
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0  # required to work with tags
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Delete existing local tag (if exists)
+        run: |
+          git tag -d v1 || true
+
+      - name: Delete remote tag (if exists)
+        run: |
+          git push origin :refs/tags/v1 || true
+
+      - name: Create new tag v1
+        run: |
+          git tag v1
+
+      - name: Push new tag
+        run: |
+          git push origin v1
