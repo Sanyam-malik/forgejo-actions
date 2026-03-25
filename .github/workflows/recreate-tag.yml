@@ -1,9 +1,10 @@
 name: Recreate v1 Tag
 
 on:
-  workflow_dispatch:  # manual trigger
-  # push:
-  #   branches: [main]  # uncomment if you want auto-run on main pushes
+  workflow_dispatch:
+  push:
+    branches: [main]
+
 permissions:
   contents: write
 
