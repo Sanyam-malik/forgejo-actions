@@ -1,0 +1,59 @@
+name: "Push Clean History"
+description: "Reinitialize repo and push clean history to any git remote"
+
+inputs:
+  remote_url:
+    description: "Base git remote URL (without credentials)"
+    required: true
+  token:
+    description: "Auth token (used for HTTPS remotes)"
+    required: false
+  user_name:
+    description: "Git username"
+    required: true
+  user_email:
+    description: "Git email"
+    required: true
+  branch:
+    description: "Branch to push"
+    required: false
+    default: "main"
+  commit_message:
+    description: "Commit message"
+    required: false
+    default: "Clean sync"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Push clean history to remote
+      shell: bash
+      run: |
+        set -e
+
+        REMOTE_URL="${{ inputs.remote_url }}"
+        TOKEN="${{ inputs.token }}"
+
+        # Inject token into HTTPS URL if provided
+        if [[ "$REMOTE_URL" == https://* && -n "$TOKEN" ]]; then
+          AUTHED_URL=$(echo "$REMOTE_URL" | sed "s#https://#https://x-access-token:${TOKEN}@#")
+        else
+          AUTHED_URL="$REMOTE_URL"
+        fi
+
+        # Remove old git history
+        rm -rf .git
+
+        # Re-init repo
+        git init
+        git config user.name "${{ inputs.user_name }}"
+        git config user.email "${{ inputs.user_email }}"
+
+        # Add and commit
+        git add .
+        git commit -m "${{ inputs.commit_message }}"
+
+        # Push
+        git branch -M "${{ inputs.branch }}"
+        git remote add target "$AUTHED_URL"
+        git push target "${{ inputs.branch }}" --force
