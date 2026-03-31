@@ -21,7 +21,7 @@ inputs:
   commit_message:
     description: "Commit message"
     required: false
-    default: "Clean sync"
+    default: ""
 
 runs:
   using: "composite"
@@ -29,10 +29,20 @@ runs:
     - name: Push clean history to remote
       shell: bash
       run: |
-        set -e
+        set -euo pipefail
 
         REMOTE_URL="${{ inputs.remote_url }}"
         TOKEN="${{ inputs.token }}"
+        BRANCH="${{ inputs.branch }}"
+
+        # Get the last commit short SHA from current repo
+        if git rev-parse --verify HEAD >/dev/null 2>&1; then
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "Last commit SHA detected: $SHORT_SHA"
+        else
+          SHORT_SHA="no-history"
+          echo "No previous commits found."
+        fi
 
         # Inject token into HTTPS URL if provided
         if [[ "$REMOTE_URL" == https://* && -n "$TOKEN" ]]; then
@@ -40,6 +50,8 @@ runs:
         else
           AUTHED_URL="$REMOTE_URL"
         fi
+
+        echo "➡️ Preparing clean repository..."
 
         # Remove old git history
         rm -rf .git
@@ -49,11 +61,25 @@ runs:
         git config user.name "${{ inputs.user_name }}"
         git config user.email "${{ inputs.user_email }}"
 
-        # Add and commit
+        # Add all files
         git add .
-        git commit -m "${{ inputs.commit_message }}"
+
+        # Commit with "Clean sync up to <SHORT_SHA>" if no message provided
+        if [[ -n "${{ inputs.commit_message }}" ]]; then
+          COMMIT_MSG="${{ inputs.commit_message }}"
+        else
+          COMMIT_MSG="Clean sync up to ${SHORT_SHA}"
+        fi
+
+        git commit -m "$COMMIT_MSG"
+
+        # Set branch
+        git branch -M "$BRANCH"
+
+        # Add remote
+        git remote add target "$AUTHED_URL"
 
         # Push
-        git branch -M "${{ inputs.branch }}"
-        git remote add target "$AUTHED_URL"
-        git push target "${{ inputs.branch }}" --force
+        git push target "$BRANCH" --force
+
+        echo "✅ Push completed successfully (commit: $COMMIT_MSG)"
