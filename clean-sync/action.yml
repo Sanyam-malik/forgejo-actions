@@ -34,9 +34,8 @@ runs:
         REMOTE_URL="${{ inputs.remote_url }}"
         TOKEN="${{ inputs.token }}"
 
-        # Inject token into HTTPS URL if provided
         if [[ "$REMOTE_URL" == https://* && -n "$TOKEN" ]]; then
-          AUTHED_URL=$(echo "$REMOTE_URL" | sed "s#https://#https://x-access-token:${TOKEN}@#")
+          AUTHED_URL=$(echo "$REMOTE_URL" | sed "s#https://#https://${TOKEN}@#")
         else
           AUTHED_URL="$REMOTE_URL"
         fi
