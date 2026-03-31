@@ -1,28 +1,23 @@
 name: "Push Clean History"
-description: "Reinitialize repo and force push clean history to any git remote"
+description: "Reinitialize repo and push clean history to any git remote"
 
 inputs:
   remote_url:
-    description: "Git remote URL (HTTPS or SSH)"
+    description: "Base git remote URL (without credentials)"
     required: true
-
   token:
-    description: "Access token for HTTPS authentication"
+    description: "Auth token (used for HTTPS remotes)"
     required: false
-
   user_name:
     description: "Git username"
     required: true
-
   user_email:
     description: "Git email"
     required: true
-
   branch:
     description: "Branch to push"
     required: false
     default: "main"
-
   commit_message:
     description: "Commit message"
     required: false
@@ -31,60 +26,34 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Push clean history
+    - name: Push clean history to remote
       shell: bash
       run: |
-        set -euo pipefail
+        set -e
 
         REMOTE_URL="${{ inputs.remote_url }}"
         TOKEN="${{ inputs.token }}"
-        BRANCH="${{ inputs.branch }}"
 
-        echo "➡️ Preparing clean repository..."
+        # Inject token into HTTPS URL if provided
+        if [[ "$REMOTE_URL" == https://* && -n "$TOKEN" ]]; then
+          AUTHED_URL=$(echo "$REMOTE_URL" | sed "s#https://#https://x-access-token:${TOKEN}@#")
+        else
+          AUTHED_URL="$REMOTE_URL"
+        fi
 
-        # Remove existing git history
+        # Remove old git history
         rm -rf .git
 
-        # Initialize repo
+        # Re-init repo
         git init
         git config user.name "${{ inputs.user_name }}"
         git config user.email "${{ inputs.user_email }}"
 
-        # Add files
+        # Add and commit
         git add .
+        git commit -m "${{ inputs.commit_message }}"
 
-        # Commit (handle empty repo safely)
-        if git diff --cached --quiet; then
-          echo "⚠️ No changes to commit"
-          git commit --allow-empty -m "${{ inputs.commit_message }}"
-        else
-          git commit -m "${{ inputs.commit_message }}"
-        fi
-
-        # Set branch
-        git branch -M "$BRANCH"
-
-        # Add remote
-        git remote add target "$REMOTE_URL"
-
-        # 🔐 Setup authentication ONLY for HTTPS
-        if [[ "$REMOTE_URL" == https://* ]]; then
-          if [[ -z "$TOKEN" ]]; then
-            echo "❌ ERROR: HTTPS remote requires a token"
-            exit 1
-          fi
-
-          echo "🔐 Configuring authentication..."
-
-          # Use Authorization header (most reliable cross-provider method)
-          git config --global http.extraheader "Authorization: Bearer $TOKEN"
-        else
-          echo "🔑 Using SSH (no token required)"
-        fi
-
-        echo "🚀 Pushing to $REMOTE_URL (branch: $BRANCH)"
-
-        # Push with force
-        git push target "$BRANCH" --force
-
-        echo "✅ Push completed successfully"
+        # Push
+        git branch -M "${{ inputs.branch }}"
+        git remote add target "$AUTHED_URL"
+        git push target "${{ inputs.branch }}" --force
