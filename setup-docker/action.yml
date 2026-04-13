@@ -62,39 +62,68 @@ runs:
           esac
         fi
 
-        # Ensure Docker service is enabled + started
         echo "Starting Docker..."
-        if command -v systemctl >/dev/null 2>&1; then
+
+        STARTED="false"
+
+        # ✅ systemd path (only if actually running systemd)
+        if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+          echo "Using systemd..."
           $SUDO systemctl enable docker || true
-          $SUDO systemctl start docker
-        else
+          $SUDO systemctl start docker || true
+          STARTED="true"
+
+        # ✅ sysvinit / service fallback
+        elif command -v service >/dev/null 2>&1; then
+          echo "Using service..."
           $SUDO service docker start || true
+          STARTED="true"
         fi
 
-        # Fix permissions (important in CI)
-        if command -v docker >/dev/null 2>&1; then
-          if [ -n "${USER:-}" ]; then
-            $SUDO usermod -aG docker "$USER" || true
-          fi
+        # ✅ Final fallback: manual dockerd (for CI/containers)
+        if ! docker info >/dev/null 2>&1; then
+          echo "Docker not running, starting dockerd manually..."
+          $SUDO dockerd > /tmp/dockerd.log 2>&1 &
+          sleep 5
         fi
 
-        # Configure registry mirror (safe overwrite)
+        # Final check
+        if docker info >/dev/null 2>&1; then
+          echo "Docker is running ✅"
+        else
+          echo "Docker failed to start ❌"
+          echo "===== dockerd logs ====="
+          cat /tmp/dockerd.log || true
+          exit 1
+        fi
+
+        # Fix permissions (best-effort)
+        if [ -n "${USER:-}" ]; then
+          $SUDO usermod -aG docker "$USER" || true
+        fi
+
+        # Configure registry mirror
         if [ -n "${{ inputs.registry_mirror }}" ]; then
           echo "Configuring registry mirror..."
 
           $SUDO mkdir -p /etc/docker
 
           $SUDO tee /etc/docker/daemon.json > /dev/null <<EOF
-          {
-            "registry-mirrors": ["${{ inputs.registry_mirror }}"]
-          }
-          EOF
+        {
+          "registry-mirrors": ["${{ inputs.registry_mirror }}"]
+        }
+        EOF
 
-          # Restart after config change
-          if command -v systemctl >/dev/null 2>&1; then
-            $SUDO systemctl restart docker
-          else
+          # Restart Docker safely
+          if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
+            $SUDO systemctl restart docker || true
+          elif command -v service >/dev/null 2>&1; then
             $SUDO service docker restart || true
+          else
+            echo "Restarting dockerd manually..."
+            pkill dockerd || true
+            $SUDO dockerd > /tmp/dockerd.log 2>&1 &
+            sleep 5
           fi
         fi
 
@@ -102,4 +131,4 @@ runs:
         docker --version
 
         echo "Docker info:"
-        docker info || true
+        docker info
