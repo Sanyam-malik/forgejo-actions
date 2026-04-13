@@ -15,7 +15,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # Handle sudo (not always available)
+        # Handle sudo
         if command -v sudo >/dev/null 2>&1; then
           SUDO="sudo"
         else
@@ -28,7 +28,6 @@ runs:
         else
           echo "Installing Docker..."
 
-          # Detect OS
           if [ -f /etc/os-release ]; then
             . /etc/os-release
             OS="$ID"
@@ -62,68 +61,63 @@ runs:
           esac
         fi
 
-        echo "Starting Docker..."
+        echo "Ensuring Docker is running..."
 
-        STARTED="false"
-
-        # ✅ systemd path (only if actually running systemd)
+        # Try systemd/service first (best effort)
         if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
-          echo "Using systemd..."
-          $SUDO systemctl enable docker || true
           $SUDO systemctl start docker || true
-          STARTED="true"
-
-        # ✅ sysvinit / service fallback
         elif command -v service >/dev/null 2>&1; then
-          echo "Using service..."
-          $SUDO service docker start || true
-          STARTED="true"
+          $SUDO service docker start >/dev/null 2>&1 || true
         fi
 
-        # ✅ Final fallback: manual dockerd (for CI/containers)
+        # Fallback if not running
         if ! docker info >/dev/null 2>&1; then
-          echo "Docker not running, starting dockerd manually..."
+          echo "Starting dockerd manually..."
           $SUDO dockerd > /tmp/dockerd.log 2>&1 &
           sleep 5
         fi
 
         # Final check
-        if docker info >/dev/null 2>&1; then
-          echo "Docker is running ✅"
-        else
-          echo "Docker failed to start ❌"
-          echo "===== dockerd logs ====="
-          cat /tmp/dockerd.log || true
-          exit 1
-        fi
+        docker info >/dev/null 2>&1 || (echo "Docker failed to start" && exit 1)
+
+        echo "Docker is running ✅"
 
         # Fix permissions (best-effort)
         if [ -n "${USER:-}" ]; then
           $SUDO usermod -aG docker "$USER" || true
         fi
 
-        # Configure registry mirror
+        # ✅ Configure registry mirror (FIXED)
         if [ -n "${{ inputs.registry_mirror }}" ]; then
           echo "Configuring registry mirror..."
 
           $SUDO mkdir -p /etc/docker
 
           $SUDO tee /etc/docker/daemon.json > /dev/null <<EOF
-        {
-          "registry-mirrors": ["${{ inputs.registry_mirror }}"]
-        }
-        EOF
+          {
+            "registry-mirrors": ["${{ inputs.registry_mirror }}"]
+          }
+          EOF
 
-          # Restart Docker safely
-          if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
-            $SUDO systemctl restart docker || true
-          elif command -v service >/dev/null 2>&1; then
-            $SUDO service docker restart || true
+          echo "Restarting Docker (force clean)..."
+
+          # 🔥 CRITICAL FIX: kill old daemon completely
+          $SUDO pkill dockerd || true
+          sleep 2
+
+          # start fresh daemon with new config
+          $SUDO dockerd > /tmp/dockerd.log 2>&1 &
+          sleep 5
+
+          # ✅ verify mirror is actually applied
+          if docker info | grep -q "${{ inputs.registry_mirror }}"; then
+            echo "Registry mirror applied ✅"
           else
-            echo "Restarting dockerd manually..."
-            pkill dockerd || true
-            $SUDO dockerd > /tmp/dockerd.log 2>&1 &
-            sleep 5
+            echo "Registry mirror NOT applied ❌"
+            docker info
+            echo "===== dockerd logs ====="
+            cat /tmp/dockerd.log || true
+            exit 1
           fi
         fi
 
