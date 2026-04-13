@@ -63,7 +63,7 @@ runs:
 
         echo "Ensuring Docker is running..."
 
-        # Try systemd/service first (best effort)
+        # Try systemd/service (best effort only)
         if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
           $SUDO systemctl start docker || true
         elif command -v service >/dev/null 2>&1; then
@@ -78,7 +78,11 @@ runs:
         fi
 
         # Final check
-        docker info >/dev/null 2>&1 || (echo "Docker failed to start" && exit 1)
+        if ! docker info >/dev/null 2>&1; then
+          echo "Docker failed to start ❌"
+          cat /tmp/dockerd.log || true
+          exit 1
+        fi
 
         echo "Docker is running ✅"
 
@@ -87,21 +91,18 @@ runs:
           $SUDO usermod -aG docker "$USER" || true
         fi
 
-        # ✅ Configure registry mirror (FIXED)
+        # ✅ Configure registry mirror (EOF-safe)
         if [ -n "${{ inputs.registry_mirror }}" ]; then
           echo "Configuring registry mirror..."
 
           $SUDO mkdir -p /etc/docker
 
-          $SUDO tee /etc/docker/daemon.json > /dev/null <<EOF
-          {
-            "registry-mirrors": ["${{ inputs.registry_mirror }}"]
-          }
-          EOF
+          # 🔥 No heredoc → no YAML bugs
+          printf '{\n  "registry-mirrors": ["%s"]\n}\n' "${{ inputs.registry_mirror }}" | $SUDO tee /etc/docker/daemon.json > /dev/null
 
-          echo "Restarting Docker (force clean)..."
+          echo "Restarting Docker (clean)..."
 
-          # 🔥 CRITICAL FIX: kill old daemon completely
+          # 🔥 Critical: kill old daemon completely
           $SUDO pkill dockerd || true
           sleep 2
 
@@ -109,7 +110,7 @@ runs:
           $SUDO dockerd > /tmp/dockerd.log 2>&1 &
           sleep 5
 
-          # ✅ verify mirror is actually applied
+          # ✅ verify mirror is active
           if docker info | grep -q "${{ inputs.registry_mirror }}"; then
             echo "Registry mirror applied ✅"
           else
