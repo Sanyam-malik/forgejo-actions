@@ -1,0 +1,105 @@
+name: Setup Docker
+description: Installs Docker (if missing) and optionally configures a registry mirror
+
+inputs:
+  registry_mirror:
+    description: Registry mirror URL (e.g. https://mirror.gcr.io)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Docker (install + configure)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Handle sudo (not always available)
+        if command -v sudo >/dev/null 2>&1; then
+          SUDO="sudo"
+        else
+          SUDO=""
+        fi
+
+        echo "Checking Docker..."
+        if command -v docker >/dev/null 2>&1; then
+          echo "Docker already installed"
+        else
+          echo "Installing Docker..."
+
+          # Detect OS
+          if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS="$ID"
+          else
+            OS="$(uname -s)"
+          fi
+
+          echo "Detected OS: $OS"
+
+          case "$OS" in
+            ubuntu|debian)
+              $SUDO apt-get update -y
+              $SUDO apt-get install -y docker.io curl
+              ;;
+            fedora)
+              $SUDO dnf install -y docker curl
+              ;;
+            centos|rhel)
+              $SUDO yum install -y docker curl
+              ;;
+            alpine)
+              $SUDO apk add --no-cache docker curl
+              ;;
+            arch)
+              $SUDO pacman -Sy --noconfirm docker curl
+              ;;
+            *)
+              echo "Using Docker convenience script..."
+              curl -fsSL https://get.docker.com | sh
+              ;;
+          esac
+        fi
+
+        # Ensure Docker service is enabled + started
+        echo "Starting Docker..."
+        if command -v systemctl >/dev/null 2>&1; then
+          $SUDO systemctl enable docker || true
+          $SUDO systemctl start docker
+        else
+          $SUDO service docker start || true
+        fi
+
+        # Fix permissions (important in CI)
+        if command -v docker >/dev/null 2>&1; then
+          if [ -n "${USER:-}" ]; then
+            $SUDO usermod -aG docker "$USER" || true
+          fi
+        fi
+
+        # Configure registry mirror (safe overwrite)
+        if [ -n "${{ inputs.registry_mirror }}" ]; then
+          echo "Configuring registry mirror..."
+
+          $SUDO mkdir -p /etc/docker
+
+          $SUDO tee /etc/docker/daemon.json > /dev/null <<EOF
+          {
+            "registry-mirrors": ["${{ inputs.registry_mirror }}"]
+          }
+          EOF
+
+          # Restart after config change
+          if command -v systemctl >/dev/null 2>&1; then
+            $SUDO systemctl restart docker
+          else
+            $SUDO service docker restart || true
+          fi
+        fi
+
+        echo "Docker version:"
+        docker --version
+
+        echo "Docker info:"
+        docker info || true
