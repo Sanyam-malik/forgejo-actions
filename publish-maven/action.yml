@@ -26,11 +26,9 @@ runs:
       name: Publish package
       shell: bash
       run: |
-        set -e
-
+        set -euo pipefail
         OWNER="${GITHUB_REPOSITORY%%/*}"
         OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-
         REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
 
         REGISTRY="${{ inputs.registry }}"
@@ -46,29 +44,73 @@ runs:
         echo "Detected package repository: $PACKAGE_URL"
         echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
 
-        eval "$(gradle -q printMavenCoordinates)"
+        # Collect all coordinates from all projects that expose printMavenCoordinates
+        declare -a COORDS=()
+        GROUP_ID=""
+        ARTIFACT_ID=""
+        VERSION=""
 
-        echo "Publishing $GROUP_ID:$ARTIFACT_ID:$VERSION"
+        while IFS= read -r line; do
+          case "$line" in
+            GROUP_ID=*) GROUP_ID="${line#GROUP_ID=}" ;;
+            ARTIFACT_ID=*) ARTIFACT_ID="${line#ARTIFACT_ID=}" ;;
+            VERSION=*) VERSION="${line#VERSION=}" ;;
+          esac
 
-        DELETE_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${GROUP_ID}:${ARTIFACT_ID}/${VERSION}"
+          if [[ -n "$GROUP_ID" && -n "$ARTIFACT_ID" && -n "$VERSION" ]]; then
+            COORDS+=("${GROUP_ID}:${ARTIFACT_ID}:${VERSION}")
+            GROUP_ID=""
+            ARTIFACT_ID=""
+            VERSION=""
+          fi
+        done < <(gradle -q printMavenCoordinates --console=plain)
 
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-          -X DELETE \
-          -u "${USER}:${TOKEN}" \
-          "$DELETE_URL")
-
-        if [ "$STATUS" != "204" ] && [ "$STATUS" != "404" ]; then
-          echo "Delete failed (HTTP $STATUS)"
+        if [[ ${#COORDS[@]} -eq 0 ]]; then
+          echo "No publishable coordinates found via printMavenCoordinates"
           exit 1
         fi
 
+        # De-duplicate
+        declare -A SEEN=()
+        declare -a UNIQUE_COORDS=()
+        for c in "${COORDS[@]}"; do
+          if [[ -z "${SEEN[$c]+x}" ]]; then
+            SEEN[$c]=1
+            UNIQUE_COORDS+=("$c")
+          fi
+        done
+
+        echo "Found ${#UNIQUE_COORDS[@]} artifact(s):"
+        printf ' - %s\n' "${UNIQUE_COORDS[@]}"
+
+        # Delete existing versions for each artifact
+        for c in "${UNIQUE_COORDS[@]}"; do
+          IFS=':' read -r G A V <<< "$c"
+          DELETE_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/${V}"
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X DELETE \
+            -u "${USER}:${TOKEN}" \
+            "$DELETE_URL")
+
+          if [[ "$STATUS" != "204" && "$STATUS" != "404" ]]; then
+            echo "Delete failed for ${G}:${A}:${V} (HTTP $STATUS)"
+            exit 1
+          fi
+        done
+
+        # Publish everything configured in Gradle
         gradle publish
 
-        LINK_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${GROUP_ID}:${ARTIFACT_ID}/-/link/${REPO_NAME}"
+        # Link each artifact
+        for c in "${UNIQUE_COORDS[@]}"; do
+          IFS=':' read -r G A V <<< "$c"
+          LINK_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/-/link/${REPO_NAME}"
 
-        curl -s -o /dev/null \
-          -X POST \
-          -u "${USER}:${TOKEN}" \
-          "$LINK_URL"
+          curl -s -o /dev/null \
+            -X POST \
+            -u "${USER}:${TOKEN}" \
+            "$LINK_URL"
+        done
 
         echo "Publish complete."
