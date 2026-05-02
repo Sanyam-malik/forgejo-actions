@@ -54,23 +54,23 @@ runs:
         export MAVEN_TOKEN="$TOKEN"
 
         # -------------------------
-        # Collect coordinates (FIXED heredoc)
+        # Collect coordinates from publishing (NO custom task)
         # -------------------------
         mapfile -t COORDS < <(
           gradle -q -I /dev/stdin <<'EOF'
-allprojects {
-  afterEvaluate { p ->
-    def pub = p.extensions.findByName("publishing")
-    if (pub != null) {
-      pub.publications.each { publication ->
-        if (publication.hasProperty("groupId")) {
-          println "${publication.groupId}:${publication.artifactId}:${publication.version}"
+        allprojects {
+          afterEvaluate { p ->
+            def pub = p.extensions.findByName("publishing")
+            if (pub != null) {
+              pub.publications.each { publication ->
+                if (publication.hasProperty("groupId")) {
+                  println "${publication.groupId}:${publication.artifactId}:${publication.version}"
+                }
+              }
+            }
+          }
         }
-      }
-    }
-  }
-}
-EOF
+        EOF
         )
 
         if [[ ${#COORDS[@]} -eq 0 ]]; then
@@ -131,6 +131,7 @@ EOF
 
         echo "Publish complete (Gradle)."
 
+
     # =========================
     # Maven flow
     # =========================
@@ -153,7 +154,7 @@ EOF
         echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
 
         # -------------------------
-        # Collect coordinates
+        # Collect coordinates (multi-module safe)
         # -------------------------
         mapfile -t COORDS < <(
           mvn -q \
@@ -204,16 +205,16 @@ EOF
         # -------------------------
         mkdir -p ~/.m2
         cat > ~/.m2/settings.xml <<EOF
-<settings>
-  <servers>
-    <server>
-      <id>registry</id>
-      <username>${USER}</username>
-      <password>${TOKEN}</password>
-    </server>
-  </servers>
-</settings>
-EOF
+        <settings>
+          <servers>
+            <server>
+              <id>registry</id>
+              <username>${USER}</username>
+              <password>${TOKEN}</password>
+            </server>
+          </servers>
+        </settings>
+        EOF
 
         # -------------------------
         # Deploy
