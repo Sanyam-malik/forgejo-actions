@@ -54,23 +54,23 @@ runs:
         export MAVEN_TOKEN="$TOKEN"
 
         # -------------------------
-        # Collect coordinates from publishing (NO custom task)
+        # Collect coordinates (FIXED heredoc)
         # -------------------------
         mapfile -t COORDS < <(
           gradle -q -I /dev/stdin <<'EOF'
-          allprojects {
-            afterEvaluate { p ->
-              def pub = p.extensions.findByName("publishing")
-              if (pub != null) {
-                pub.publications.each { publication ->
-                  if (publication.hasProperty("groupId")) {
-                    println "${publication.groupId}:${publication.artifactId}:${publication.version}"
-                  }
-                }
-              }
-            }
-          }
-          EOF
+allprojects {
+  afterEvaluate { p ->
+    def pub = p.extensions.findByName("publishing")
+    if (pub != null) {
+      pub.publications.each { publication ->
+        if (publication.hasProperty("groupId")) {
+          println "${publication.groupId}:${publication.artifactId}:${publication.version}"
+        }
+      }
+    }
+  }
+}
+EOF
         )
 
         if [[ ${#COORDS[@]} -eq 0 ]]; then
@@ -131,7 +131,6 @@ runs:
 
         echo "Publish complete (Gradle)."
 
-
     # =========================
     # Maven flow
     # =========================
@@ -154,7 +153,7 @@ runs:
         echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
 
         # -------------------------
-        # Collect coordinates (multi-module safe)
+        # Collect coordinates
         # -------------------------
         mapfile -t COORDS < <(
           mvn -q \
@@ -205,16 +204,16 @@ runs:
         # -------------------------
         mkdir -p ~/.m2
         cat > ~/.m2/settings.xml <<EOF
-        <settings>
-          <servers>
-            <server>
-              <id>registry</id>
-              <username>${USER}</username>
-              <password>${TOKEN}</password>
-            </server>
-          </servers>
-        </settings>
-        EOF
+<settings>
+  <servers>
+    <server>
+      <id>registry</id>
+      <username>${USER}</username>
+      <password>${TOKEN}</password>
+    </server>
+  </servers>
+</settings>
+EOF
 
         # -------------------------
         # Deploy
