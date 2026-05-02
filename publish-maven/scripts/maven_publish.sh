@@ -17,25 +17,36 @@ export MAVEN_TOKEN="$TOKEN"
 
 echo "Detected package repository: $PACKAGE_URL"
 
-# Output for GitHub Actions
+# GitHub Actions output
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
 fi
 
 # -----------------------------
+# Create Maven settings.xml
+# -----------------------------
+cat > settings.xml <<EOF
+<settings>
+  <servers>
+    <server>
+      <id>registry</id>
+      <username>${MAVEN_USER}</username>
+      <password>${MAVEN_TOKEN}</password>
+    </server>
+  </servers>
+</settings>
+EOF
+
+# -----------------------------
 # Collect Maven coordinates
 # -----------------------------
-
 declare -a COORDS=()
 
-# Function to extract coords from a module
 get_coords() {
   local dir="$1"
-
   pushd "$dir" > /dev/null
 
   local G A V
-
   G=$(mvn help:evaluate -Dexpression=project.groupId -q -DforceStdout)
   A=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
   V=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
@@ -50,7 +61,7 @@ get_coords() {
 # Root project
 get_coords "."
 
-# Detect modules (if any)
+# Modules
 if grep -q "<modules>" pom.xml; then
   mapfile -t MODULES < <(xmllint --xpath "//modules/module/text()" pom.xml 2>/dev/null || true)
 
@@ -69,7 +80,6 @@ fi
 # -----------------------------
 # De-duplicate
 # -----------------------------
-
 declare -A SEEN=()
 declare -a UNIQUE_COORDS=()
 
@@ -86,7 +96,6 @@ printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 # -----------------------------
 # Delete existing versions
 # -----------------------------
-
 for c in "${UNIQUE_COORDS[@]}"; do
   IFS=':' read -r G A V <<< "$c"
 
@@ -106,17 +115,13 @@ done
 # -----------------------------
 # Publish via Maven
 # -----------------------------
-
-mvn -B deploy \
+mvn -s settings.xml -B deploy \
   -Dmaven.test.skip=true \
-  -DaltDeploymentRepository=registry::"${PACKAGE_URL}" \
-  -Dusername="${USER}" \
-  -Dpassword="${TOKEN}"
+  -DaltDeploymentRepository=registry::"${PACKAGE_URL}"
 
 # -----------------------------
-# Link artifacts
+# Link artifacts to repo
 # -----------------------------
-
 for c in "${UNIQUE_COORDS[@]}"; do
   IFS=':' read -r G A V <<< "$c"
 
