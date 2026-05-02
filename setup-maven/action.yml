@@ -29,12 +29,12 @@ runs:
         PKG_CACHE="${{ inputs.pkg_cache }}"
         VERSION="${{ inputs.maven_version }}"
 
-        # Choose base URL (mirror or CDN)
+        # Choose base URL
         if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/dlcdn.apache.org/maven/maven-3"
+          BASE_URL="https://${PKG_CACHE}/dlcdn.apache.org/maven"
           echo "Using pkg-cache mirror: $BASE_URL"
         else
-          BASE_URL="https://dlcdn.apache.org/maven/maven-3"
+          BASE_URL="https://dlcdn.apache.org/maven"
           echo "Using Apache CDN: $BASE_URL"
         fi
 
@@ -44,30 +44,43 @@ runs:
 
           echo "Resolving latest stable Maven version..."
 
-          RELEASE=$(curl -s "$METADATA_URL" | grep -oPm1 "(?<=<release>)[^<]+")
-
-          if echo "$RELEASE" | grep -Eq "(alpha|beta|RC|M)"; then
-            echo "Release tag is unstable ($RELEASE), finding latest stable..."
-
-            VERSION=$(curl -s "$METADATA_URL" \
-              | grep -oP "(?<=<version>)[^<]+" \
-              | grep -Ev "(alpha|beta|RC|M)" \
-              | sort -V \
-              | tail -n1)
-          else
-            VERSION="$RELEASE"
-          fi
+          VERSION=$(curl -s "$METADATA_URL" \
+            | sed -n 's:.*<version>\(.*\)</version>.*:\1:p' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n1)
         fi
 
-        DOWNLOAD_URL="${BASE_URL}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
+        echo "Resolved version: $VERSION"
 
-        echo "Installing Maven $VERSION"
+        # Determine major version (3 or 4)
+        MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1)
+        BASE_PATH="maven-${MAJOR_VERSION}"
+
+        DOWNLOAD_URL="${BASE_URL}/${BASE_PATH}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
+
         echo "Download URL: $DOWNLOAD_URL"
 
-        curl -L --retry 5 --retry-delay 5 \
-          -o maven.tar.gz \
-          "$DOWNLOAD_URL"
+        # Try download (mirror or CDN)
+        if ! curl -fL --retry 3 --retry-delay 5 -o maven.tar.gz "$DOWNLOAD_URL"; then
+          echo "Primary download failed, retrying from Apache CDN..."
 
+          FALLBACK_URL="https://dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
+          echo "Fallback URL: $FALLBACK_URL"
+
+          curl -fL --retry 5 --retry-delay 5 -o maven.tar.gz "$FALLBACK_URL"
+        fi
+
+        # Validate archive
+        FILE_TYPE=$(file maven.tar.gz)
+        if ! echo "$FILE_TYPE" | grep -q "gzip compressed"; then
+          echo "Downloaded file is not a valid gzip archive!"
+          echo "File type: $FILE_TYPE"
+          head -n 20 maven.tar.gz || true
+          exit 1
+        fi
+
+        # Extract
         tar -xzf maven.tar.gz
         mv "apache-maven-${VERSION}" "$HOME/.maven-dist"
 
