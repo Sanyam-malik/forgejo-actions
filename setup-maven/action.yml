@@ -38,7 +38,7 @@ runs:
           echo "Using Apache CDN: $BASE_URL"
         fi
 
-        # Resolve latest stable version
+        # Resolve latest stable version (strict X.Y.Z only)
         if [ "$VERSION" = "latest" ]; then
           METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
 
@@ -61,7 +61,7 @@ runs:
 
         echo "Download URL: $DOWNLOAD_URL"
 
-        # Try download (mirror or CDN)
+        # Try download (mirror or CDN fallback)
         if ! curl -fL --retry 3 --retry-delay 5 -o maven.tar.gz "$DOWNLOAD_URL"; then
           echo "Primary download failed, retrying from Apache CDN..."
 
@@ -71,16 +71,15 @@ runs:
           curl -fL --retry 5 --retry-delay 5 -o maven.tar.gz "$FALLBACK_URL"
         fi
 
-        # Validate archive
-        FILE_TYPE=$(file maven.tar.gz)
-        if ! echo "$FILE_TYPE" | grep -q "gzip compressed"; then
-          echo "Downloaded file is not a valid gzip archive!"
-          echo "File type: $FILE_TYPE"
+        # Validate archive (portable)
+        if ! tar -tzf maven.tar.gz >/dev/null 2>&1; then
+          echo "Downloaded file is not a valid tar.gz archive!"
+          echo "First few lines of response:"
           head -n 20 maven.tar.gz || true
           exit 1
         fi
 
-        # Extract
+        # Extract and setup
         tar -xzf maven.tar.gz
         mv "apache-maven-${VERSION}" "$HOME/.maven-dist"
 
