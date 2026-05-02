@@ -1,5 +1,5 @@
 name: Publish Maven Package
-description: Publish Gradle artifacts to a Maven registry
+description: Publish Gradle or Maven artifacts to a Maven registry
 
 inputs:
   registry:
@@ -14,6 +14,11 @@ inputs:
     description: Registry token
     required: true
 
+  build_tool:
+    description: Build tool (gradle | maven)
+    required: false
+    default: gradle
+
 outputs:
   package_url:
     description: Maven repository URL
@@ -27,90 +32,27 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        OWNER="${GITHUB_REPOSITORY%%/*}"
-        OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-        REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
 
-        REGISTRY="${{ inputs.registry }}"
-        USER="${{ inputs.user }}"
-        TOKEN="${{ inputs.token }}"
+        SCRIPT_DIR="${{ github.action_path }}/scripts"
+        BUILD_TOOL="${{ inputs.build_tool }}"
 
-        PACKAGE_URL="https://${REGISTRY}/api/packages/${OWNER}/maven"
+        chmod +x "$SCRIPT_DIR/"*.sh
 
-        export MAVEN_PACKAGE_URL="$PACKAGE_URL"
-        export MAVEN_USER="$USER"
-        export MAVEN_TOKEN="$TOKEN"
-
-        echo "Detected package repository: $PACKAGE_URL"
-        echo "package_url=$PACKAGE_URL" >> "$GITHUB_OUTPUT"
-
-        # Collect all coordinates from all projects that expose printMavenCoordinates
-        declare -a COORDS=()
-        GROUP_ID=""
-        ARTIFACT_ID=""
-        VERSION=""
-
-        while IFS= read -r line; do
-          case "$line" in
-            GROUP_ID=*) GROUP_ID="${line#GROUP_ID=}" ;;
-            ARTIFACT_ID=*) ARTIFACT_ID="${line#ARTIFACT_ID=}" ;;
-            VERSION=*) VERSION="${line#VERSION=}" ;;
-          esac
-
-          if [[ -n "$GROUP_ID" && -n "$ARTIFACT_ID" && -n "$VERSION" ]]; then
-            COORDS+=("${GROUP_ID}:${ARTIFACT_ID}:${VERSION}")
-            GROUP_ID=""
-            ARTIFACT_ID=""
-            VERSION=""
-          fi
-        done < <(gradle -q printMavenCoordinates --console=plain)
-
-        if [[ ${#COORDS[@]} -eq 0 ]]; then
-          echo "No publishable coordinates found via printMavenCoordinates"
-          exit 1
-        fi
-
-        # De-duplicate
-        declare -A SEEN=()
-        declare -a UNIQUE_COORDS=()
-        for c in "${COORDS[@]}"; do
-          if [[ -z "${SEEN[$c]+x}" ]]; then
-            SEEN[$c]=1
-            UNIQUE_COORDS+=("$c")
-          fi
-        done
-
-        echo "Found ${#UNIQUE_COORDS[@]} artifact(s):"
-        printf ' - %s\n' "${UNIQUE_COORDS[@]}"
-
-        # Delete existing versions for each artifact
-        for c in "${UNIQUE_COORDS[@]}"; do
-          IFS=':' read -r G A V <<< "$c"
-          DELETE_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/${V}"
-
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X DELETE \
-            -u "${USER}:${TOKEN}" \
-            "$DELETE_URL")
-
-          if [[ "$STATUS" != "204" && "$STATUS" != "404" ]]; then
-            echo "Delete failed for ${G}:${A}:${V} (HTTP $STATUS)"
+        case "$BUILD_TOOL" in
+          gradle)
+            "$SCRIPT_DIR/gradle_publish.sh" \
+              "${{ inputs.registry }}" \
+              "${{ inputs.user }}" \
+              "${{ inputs.token }}"
+            ;;
+          maven)
+            "$SCRIPT_DIR/maven_publish.sh" \
+              "${{ inputs.registry }}" \
+              "${{ inputs.user }}" \
+              "${{ inputs.token }}"
+            ;;
+          *)
+            echo "Unsupported build_tool: $BUILD_TOOL"
             exit 1
-          fi
-        done
-
-        # Publish everything configured in Gradle
-        gradle publish
-
-        # Link each artifact
-        for c in "${UNIQUE_COORDS[@]}"; do
-          IFS=':' read -r G A V <<< "$c"
-          LINK_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/-/link/${REPO_NAME}"
-
-          curl -s -o /dev/null \
-            -X POST \
-            -u "${USER}:${TOKEN}" \
-            "$LINK_URL"
-        done
-
-        echo "Publish complete."
+            ;;
+        esac
