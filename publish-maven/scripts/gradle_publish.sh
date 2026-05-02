@@ -97,7 +97,7 @@ done
 # -----------------------------
 # Publish
 # -----------------------------
-gradle publish
+gradle publish -x testClasses -x test
 
 # -----------------------------
 # Link artifacts
