@@ -109,7 +109,7 @@ done
 
 mvn -B deploy \
   -Dmaven.test.skip=true \
-  -DaltDeploymentRepository=registry::default::"${PACKAGE_URL}" \
+  -DaltDeploymentRepository=registry::"${PACKAGE_URL}" \
   -Dusername="${USER}" \
   -Dpassword="${TOKEN}"
 
