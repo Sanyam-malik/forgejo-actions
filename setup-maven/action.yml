@@ -1,0 +1,67 @@
+name: Setup Maven
+description: Install Maven optionally using pkg-cache mirror
+
+inputs:
+  pkg_cache:
+    description: Package cache hostname
+    required: false
+    default: ""
+
+  maven_version:
+    description: Maven version (use 'latest' for current release)
+    required: false
+    default: latest
+
+outputs:
+  maven_version:
+    description: Installed Maven version
+    value: ${{ steps.install.outputs.maven_version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      name: Install Maven
+      shell: bash
+      run: |
+        set -e
+
+        PKG_CACHE="${{ inputs.pkg_cache }}"
+        VERSION="${{ inputs.maven_version }}"
+
+        if [ -n "$PKG_CACHE" ]; then
+          BASE_URL="https://${PKG_CACHE}/archive.apache.org/dist/maven/maven-3"
+          echo "Using pkg-cache mirror: $BASE_URL"
+        else
+          BASE_URL="https://archive.apache.org/dist/maven/maven-3"
+          echo "Using Apache archive: $BASE_URL"
+        fi
+
+        # Resolve latest version
+        if [ "$VERSION" = "latest" ]; then
+          METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
+          VERSION=$(curl -s "$METADATA_URL" | grep -oPm1 "(?<=<release>)[^<]+")
+        fi
+
+        DOWNLOAD_URL="${BASE_URL}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
+
+        echo "Installing Maven $VERSION"
+        echo "Download URL: $DOWNLOAD_URL"
+
+        curl -L --retry 5 --retry-delay 5 \
+          -o maven.tar.gz \
+          "$DOWNLOAD_URL"
+
+        tar -xzf maven.tar.gz
+        mv "apache-maven-${VERSION}" "$HOME/.maven-dist"
+
+        echo "maven_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+        echo "MAVEN_HOME=$HOME/.maven-dist" >> $GITHUB_ENV
+        echo "PATH=$HOME/.maven-dist/bin:$PATH" >> $GITHUB_ENV
+        export PATH=$HOME/.maven-dist/bin:$PATH
+
+        echo "Maven installed at: $MAVEN_HOME/bin/mvn"
+        echo "Detected mvn path: $(command -v mvn)"
+
+        mvn -version
