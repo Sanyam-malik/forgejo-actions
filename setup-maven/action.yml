@@ -1,14 +1,14 @@
 name: Setup Maven
-description: Install Maven optionally using pkg-cache mirror
+description: Install Maven with optional pkg-cache mirror
 
 inputs:
   pkg_cache:
-    description: Package cache hostname
+    description: Package cache hostname (mirror/proxy)
     required: false
     default: ""
 
   maven_version:
-    description: Maven version (use 'latest' for current release)
+    description: Maven version (use 'latest' for current stable release)
     required: false
     default: latest
 
@@ -29,18 +29,34 @@ runs:
         PKG_CACHE="${{ inputs.pkg_cache }}"
         VERSION="${{ inputs.maven_version }}"
 
+        # Choose base URL (mirror or CDN)
         if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/archive.apache.org/dist/maven/maven-3"
+          BASE_URL="https://${PKG_CACHE}/dlcdn.apache.org/maven/maven-3"
           echo "Using pkg-cache mirror: $BASE_URL"
         else
-          BASE_URL="https://archive.apache.org/dist/maven/maven-3"
-          echo "Using Apache archive: $BASE_URL"
+          BASE_URL="https://dlcdn.apache.org/maven/maven-3"
+          echo "Using Apache CDN: $BASE_URL"
         fi
 
-        # Resolve latest version
+        # Resolve latest stable version
         if [ "$VERSION" = "latest" ]; then
           METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
-          VERSION=$(curl -s "$METADATA_URL" | grep -oPm1 "(?<=<release>)[^<]+")
+
+          echo "Resolving latest stable Maven version..."
+
+          RELEASE=$(curl -s "$METADATA_URL" | grep -oPm1 "(?<=<release>)[^<]+")
+
+          if echo "$RELEASE" | grep -Eq "(alpha|beta|RC|M)"; then
+            echo "Release tag is unstable ($RELEASE), finding latest stable..."
+
+            VERSION=$(curl -s "$METADATA_URL" \
+              | grep -oP "(?<=<version>)[^<]+" \
+              | grep -Ev "(alpha|beta|RC|M)" \
+              | sort -V \
+              | tail -n1)
+          else
+            VERSION="$RELEASE"
+          fi
         fi
 
         DOWNLOAD_URL="${BASE_URL}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
