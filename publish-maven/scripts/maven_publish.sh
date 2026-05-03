@@ -174,7 +174,7 @@ done
 # -----------------------------
 # Deploy
 # -----------------------------
-mvn -B deploy \
+mvn -s "$M2_SETTINGS" -B deploy \
   -Dmaven.test.skip=true \
   -DaltDeploymentRepository=registry::default::"${PACKAGE_URL}"
 
