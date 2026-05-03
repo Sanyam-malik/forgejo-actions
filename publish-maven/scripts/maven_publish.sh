@@ -23,9 +23,13 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 fi
 
 # -----------------------------
-# Create Maven settings.xml
+# Merge into ~/.m2/settings.xml
 # -----------------------------
-cat > settings.xml <<EOF
+M2_SETTINGS="${HOME}/.m2/settings.xml"
+mkdir -p "${HOME}/.m2"
+
+if [[ ! -f "$M2_SETTINGS" ]]; then
+  cat > "$M2_SETTINGS" <<EOF
 <settings>
   <servers>
     <server>
@@ -36,6 +40,39 @@ cat > settings.xml <<EOF
   </servers>
 </settings>
 EOF
+else
+  # Ensure <servers> exists
+  if ! grep -q "<servers>" "$M2_SETTINGS"; then
+    sed -i 's|</settings>|  <servers>\n  </servers>\n</settings>|' "$M2_SETTINGS"
+  fi
+
+  # Remove existing registry server (avoid duplicates)
+  awk '
+    BEGIN {skip=0}
+    /<server>/ {block=""}
+    {
+      block = block $0 "\n"
+    }
+    /<\/server>/ {
+      if (block ~ /<id>registry<\/id>/) {
+        skip=1
+      } else {
+        printf "%s", block
+      }
+      block=""
+      skip=0
+      next
+    }
+    !skip && !/<server>/ && !/<\/server>/ {
+      print
+    }
+  ' "$M2_SETTINGS" > "${M2_SETTINGS}.tmp" || cp "$M2_SETTINGS" "${M2_SETTINGS}.tmp"
+
+  mv "${M2_SETTINGS}.tmp" "$M2_SETTINGS"
+
+  # Inject new server
+  sed -i "s|</servers>|  <server>\n    <id>registry</id>\n    <username>${MAVEN_USER}</username>\n    <password>${MAVEN_TOKEN}</password>\n  </server>\n</servers>|" "$M2_SETTINGS"
+fi
 
 # -----------------------------
 # Collect Maven coordinates
@@ -94,6 +131,11 @@ echo "Found ${#UNIQUE_COORDS[@]} artifact(s):"
 printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 
 # -----------------------------
+# Build first (IMPORTANT)
+# -----------------------------
+mvn -B clean package -Dmaven.test.skip=true
+
+# -----------------------------
 # Delete existing versions
 # -----------------------------
 for c in "${UNIQUE_COORDS[@]}"; do
@@ -113,9 +155,9 @@ for c in "${UNIQUE_COORDS[@]}"; do
 done
 
 # -----------------------------
-# Publish via Maven
+# Deploy
 # -----------------------------
-mvn -s settings.xml -B deploy \
+mvn -B deploy \
   -Dmaven.test.skip=true \
   -DaltDeploymentRepository=registry::"${PACKAGE_URL}"
 
