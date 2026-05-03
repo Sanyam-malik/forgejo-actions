@@ -150,7 +150,7 @@ printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 # -----------------------------
 # Build first
 # -----------------------------
-mvn -s "$M2_SETTINGS" -B clean package -Dmaven.test.skip=true
+mvn -s "$M2_SETTINGS" dependency:go-offline
 
 # -----------------------------
 # Delete existing versions
