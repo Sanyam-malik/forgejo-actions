@@ -53,7 +53,7 @@ runs:
 
         find . -type d -name ".git" -not -path "./.git" | while read gitdir; do
           repo=$(dirname "$gitdir")
-          echo "Removing embedded repo: $repo"
+          echo "Removing embedded repository: $repo"
           rm -rf "$repo"
         done
 
