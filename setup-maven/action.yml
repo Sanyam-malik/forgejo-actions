@@ -47,7 +47,7 @@ runs:
         echo "Resolved version: $VERSION"
 
         # --------------------------------------------------
-        # Build download paths
+        # Build paths
         # --------------------------------------------------
         MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1)
         BASE_PATH="maven-${MAJOR_VERSION}"
@@ -101,12 +101,24 @@ runs:
         tar -xzf maven.tar.gz
         mv "apache-maven-${VERSION}" "$HOME/.maven-dist"
 
+        # Outputs
         echo "maven_version=$VERSION" >> "$GITHUB_OUTPUT"
 
-        echo "MAVEN_HOME=$HOME/.maven-dist" >> $GITHUB_ENV
-        echo "$HOME/.maven-dist/bin" >> $GITHUB_PATH
+        # Persist for next steps
+        echo "MAVEN_HOME=$HOME/.maven-dist" >> "$GITHUB_ENV"
+        echo "$HOME/.maven-dist/bin" >> "$GITHUB_PATH"
 
-        echo "Maven installed at: $HOME/.maven-dist/bin/mvn"
+        # 🔥 CRITICAL: also set for CURRENT step
+        export MAVEN_HOME="$HOME/.maven-dist"
+        export PATH="$MAVEN_HOME/bin:$PATH"
+
+        echo "Maven installed at: $MAVEN_HOME/bin/mvn"
         echo "Detected mvn path: $(command -v mvn)"
+
+        # Sanity check
+        if [ ! -x "$MAVEN_HOME/bin/mvn" ]; then
+          echo "❌ Maven binary not found!"
+          exit 1
+        fi
 
         mvn -version
