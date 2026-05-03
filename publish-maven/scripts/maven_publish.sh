@@ -131,9 +131,9 @@ echo "Found ${#UNIQUE_COORDS[@]} artifact(s):"
 printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 
 # -----------------------------
-# Build first (IMPORTANT)
+# Download Dependencies
 # -----------------------------
-mvn -B clean package -Dmaven.test.skip=true
+mvn dependency:go-offline
 
 # -----------------------------
 # Delete existing versions
@@ -159,7 +159,7 @@ done
 # -----------------------------
 mvn -B deploy \
   -Dmaven.test.skip=true \
-  -DaltDeploymentRepository=registry::"${PACKAGE_URL}"
+  -DaltDeploymentRepository=registry::default::"${PACKAGE_URL}"
 
 # -----------------------------
 # Link artifacts to repo
