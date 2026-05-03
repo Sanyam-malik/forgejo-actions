@@ -150,7 +150,7 @@ printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 # -----------------------------
 # Build first
 # -----------------------------
-mvn -B clean package -Dmaven.test.skip=true
+mvn -s "$M2_SETTINGS" -B clean package -Dmaven.test.skip=true
 
 # -----------------------------
 # Delete existing versions
@@ -172,7 +172,7 @@ for c in "${UNIQUE_COORDS[@]}"; do
 done
 
 # -----------------------------
-# Deploy (FIXED syntax)
+# Deploy
 # -----------------------------
 mvn -B deploy \
   -Dmaven.test.skip=true \
