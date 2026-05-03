@@ -15,6 +15,10 @@ inputs:
     description: Image tag
     required: false
     default: latest
+  build_args:
+    description: Additional docker build arguments (e.g. --build-arg FOO=bar)
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -22,5 +26,6 @@ runs:
     - shell: bash
       run: |
         docker build \
+          ${{ inputs.build_args }} \
           -t "${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
           .
