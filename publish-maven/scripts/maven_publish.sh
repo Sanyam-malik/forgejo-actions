@@ -23,11 +23,37 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 fi
 
 # -----------------------------
-# Merge into ~/.m2/settings.xml
+# Use local Maven config (avoid /root issues)
 # -----------------------------
-M2_SETTINGS="${HOME}/.m2/settings.xml"
-mkdir -p "${HOME}/.m2"
+M2_DIR="$(pwd)/.m2"
+mkdir -p "$M2_DIR"
+export MAVEN_CONFIG="$M2_DIR"
+M2_SETTINGS="$M2_DIR/settings.xml"
 
+echo "Using Maven config at: $M2_DIR"
+
+# -----------------------------
+# Detect project settings.xml
+# -----------------------------
+PROJECT_SETTINGS=""
+
+if [[ -f "./settings.xml" ]]; then
+  PROJECT_SETTINGS="./settings.xml"
+elif [[ -f "./.mvn/settings.xml" ]]; then
+  PROJECT_SETTINGS="./.mvn/settings.xml"
+fi
+
+# -----------------------------
+# Copy project settings if exists
+# -----------------------------
+if [[ -n "$PROJECT_SETTINGS" ]]; then
+  echo "Using project settings from: $PROJECT_SETTINGS"
+  cp "$PROJECT_SETTINGS" "$M2_SETTINGS"
+fi
+
+# -----------------------------
+# Merge server credentials
+# -----------------------------
 if [[ ! -f "$M2_SETTINGS" ]]; then
   cat > "$M2_SETTINGS" <<EOF
 <settings>
@@ -46,13 +72,11 @@ else
     sed -i 's|</settings>|  <servers>\n  </servers>\n</settings>|' "$M2_SETTINGS"
   fi
 
-  # Remove existing registry server (avoid duplicates)
+  # Remove existing registry server
   awk '
     BEGIN {skip=0}
     /<server>/ {block=""}
-    {
-      block = block $0 "\n"
-    }
+    { block = block $0 "\n" }
     /<\/server>/ {
       if (block ~ /<id>registry<\/id>/) {
         skip=1
@@ -63,9 +87,7 @@ else
       skip=0
       next
     }
-    !skip && !/<server>/ && !/<\/server>/ {
-      print
-    }
+    !skip && !/<server>/ && !/<\/server>/ { print }
   ' "$M2_SETTINGS" > "${M2_SETTINGS}.tmp" || cp "$M2_SETTINGS" "${M2_SETTINGS}.tmp"
 
   mv "${M2_SETTINGS}.tmp" "$M2_SETTINGS"
@@ -95,17 +117,12 @@ get_coords() {
   popd > /dev/null
 }
 
-# Root project
 get_coords "."
 
-# Modules
 if grep -q "<modules>" pom.xml; then
   mapfile -t MODULES < <(xmllint --xpath "//modules/module/text()" pom.xml 2>/dev/null || true)
-
   for m in "${MODULES[@]}"; do
-    if [[ -f "$m/pom.xml" ]]; then
-      get_coords "$m"
-    fi
+    [[ -f "$m/pom.xml" ]] && get_coords "$m"
   done
 fi
 
@@ -131,9 +148,9 @@ echo "Found ${#UNIQUE_COORDS[@]} artifact(s):"
 printf ' - %s\n' "${UNIQUE_COORDS[@]}"
 
 # -----------------------------
-# Download Dependencies
+# Build first
 # -----------------------------
-mvn dependency:go-offline
+mvn -B clean package -Dmaven.test.skip=true
 
 # -----------------------------
 # Delete existing versions
@@ -155,14 +172,14 @@ for c in "${UNIQUE_COORDS[@]}"; do
 done
 
 # -----------------------------
-# Deploy
+# Deploy (FIXED syntax)
 # -----------------------------
 mvn -B deploy \
   -Dmaven.test.skip=true \
   -DaltDeploymentRepository=registry::default::"${PACKAGE_URL}"
 
 # -----------------------------
-# Link artifacts to repo
+# Link artifacts
 # -----------------------------
 for c in "${UNIQUE_COORDS[@]}"; do
   IFS=':' read -r G A V <<< "$c"
