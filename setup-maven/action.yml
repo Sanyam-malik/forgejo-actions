@@ -3,7 +3,7 @@ description: Install Maven with optional pkg-cache mirror
 
 inputs:
   pkg_cache:
-    description: Package cache hostname (mirror/proxy)
+    description: Package cache hostname (reverse proxy cache)
     required: false
     default: ""
 
@@ -29,16 +29,9 @@ runs:
         PKG_CACHE="${{ inputs.pkg_cache }}"
         VERSION="${{ inputs.maven_version }}"
 
-        # Choose base URL
-        if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/dlcdn.apache.org/maven"
-          echo "Using pkg-cache mirror: $BASE_URL"
-        else
-          BASE_URL="https://dlcdn.apache.org/maven"
-          echo "Using Apache CDN: $BASE_URL"
-        fi
-
-        # Resolve latest stable version (strict X.Y.Z only)
+        # --------------------------------------------------
+        # Resolve latest version (strict X.Y.Z)
+        # --------------------------------------------------
         if [ "$VERSION" = "latest" ]; then
           METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
 
@@ -53,43 +46,67 @@ runs:
 
         echo "Resolved version: $VERSION"
 
-        # Determine major version (3 or 4)
+        # --------------------------------------------------
+        # Build download paths
+        # --------------------------------------------------
         MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1)
         BASE_PATH="maven-${MAJOR_VERSION}"
+        FILE="apache-maven-${VERSION}-bin.tar.gz"
 
-        DOWNLOAD_URL="${BASE_URL}/${BASE_PATH}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
+        if [ -n "$PKG_CACHE" ]; then
+          echo "Using pkg-cache for ALL sources"
 
-        echo "Download URL: $DOWNLOAD_URL"
+          URLS=(
+            "https://${PKG_CACHE}/dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+            "https://${PKG_CACHE}/archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+          )
+        else
+          echo "Using public Apache sources"
 
-        # Try download (mirror or CDN fallback)
-        if ! curl -fL --retry 3 --retry-delay 5 -o maven.tar.gz "$DOWNLOAD_URL"; then
-          echo "Primary download failed, retrying from Apache CDN..."
-
-          FALLBACK_URL="https://dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/apache-maven-${VERSION}-bin.tar.gz"
-          echo "Fallback URL: $FALLBACK_URL"
-
-          curl -fL --retry 5 --retry-delay 5 -o maven.tar.gz "$FALLBACK_URL"
+          URLS=(
+            "https://dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+            "https://archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+          )
         fi
 
-        # Validate archive (portable)
-        if ! tar -tzf maven.tar.gz >/dev/null 2>&1; then
-          echo "Downloaded file is not a valid tar.gz archive!"
-          echo "First few lines of response:"
-          head -n 20 maven.tar.gz || true
+        # --------------------------------------------------
+        # Download with fallback
+        # --------------------------------------------------
+        SUCCESS=0
+
+        for URL in "${URLS[@]}"; do
+          echo "Trying: $URL"
+
+          if curl -fL --retry 3 --retry-delay 5 -o maven.tar.gz "$URL"; then
+            if tar -tzf maven.tar.gz >/dev/null 2>&1; then
+              echo "Download + validation succeeded from: $URL"
+              SUCCESS=1
+              break
+            else
+              echo "Invalid archive (likely HTML/corrupt), trying next..."
+            fi
+          else
+            echo "Download failed, trying next..."
+          fi
+        done
+
+        if [ "$SUCCESS" -ne 1 ]; then
+          echo "❌ Failed to download Maven $VERSION from all sources"
           exit 1
         fi
 
-        # Extract and setup
+        # --------------------------------------------------
+        # Extract & setup
+        # --------------------------------------------------
         tar -xzf maven.tar.gz
         mv "apache-maven-${VERSION}" "$HOME/.maven-dist"
 
         echo "maven_version=$VERSION" >> "$GITHUB_OUTPUT"
 
         echo "MAVEN_HOME=$HOME/.maven-dist" >> $GITHUB_ENV
-        echo "PATH=$HOME/.maven-dist/bin:$PATH" >> $GITHUB_ENV
-        export PATH=$HOME/.maven-dist/bin:$PATH
+        echo "$HOME/.maven-dist/bin" >> $GITHUB_PATH
 
-        echo "Maven installed at: $MAVEN_HOME/bin/mvn"
+        echo "Maven installed at: $HOME/.maven-dist/bin/mvn"
         echo "Detected mvn path: $(command -v mvn)"
 
         mvn -version
