@@ -4,12 +4,18 @@ set -euo pipefail
 REGISTRY="${1:?registry required}"
 USER="${2:?user required}"
 TOKEN="${3:?token required}"
+REGISTRY_BASE="$REGISTRY"
+case "$REGISTRY_BASE" in
+  http://*|https://*) ;;
+  *) REGISTRY_BASE="https://$REGISTRY_BASE" ;;
+esac
+REGISTRY_BASE="${REGISTRY_BASE%/}"
 
 OWNER="${GITHUB_REPOSITORY%%/*}"
 OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
 REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
 
-PACKAGE_URL="https://${REGISTRY}/api/packages/${OWNER}/maven"
+PACKAGE_URL="${REGISTRY_BASE}/api/packages/${OWNER}/maven"
 
 export MAVEN_PACKAGE_URL="$PACKAGE_URL"
 export MAVEN_USER="$USER"
@@ -158,7 +164,7 @@ mvn -q -s "$M2_SETTINGS" dependency:go-offline
 for c in "${UNIQUE_COORDS[@]}"; do
   IFS=':' read -r G A V <<< "$c"
 
-  DELETE_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/${V}"
+  DELETE_URL="${REGISTRY_BASE}/api/v1/packages/${OWNER}/maven/${G}:${A}/${V}"
 
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -X DELETE \
@@ -184,7 +190,7 @@ mvn -s "$M2_SETTINGS" -B deploy \
 for c in "${UNIQUE_COORDS[@]}"; do
   IFS=':' read -r G A V <<< "$c"
 
-  LINK_URL="https://${REGISTRY}/api/v1/packages/${OWNER}/maven/${G}:${A}/-/link/${REPO_NAME}"
+  LINK_URL="${REGISTRY_BASE}/api/v1/packages/${OWNER}/maven/${G}:${A}/-/link/${REPO_NAME}"
 
   curl -s -o /dev/null \
     -X POST \

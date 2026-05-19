@@ -7,7 +7,7 @@ inputs:
     required: true
 
   pkg_cache:
-    description: Package cache hostname
+    description: Package cache host or base URL
     required: false
     default: ""
 
@@ -33,7 +33,14 @@ runs:
         echo "Installing Hugo ${VERSION}"
 
         if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/github.com/gohugoio/hugo"
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          BASE_URL="${PKG_CACHE_BASE}/github.com/gohugoio/hugo"
           echo "Using pkg-cache mirror: $BASE_URL"
         else
           BASE_URL="https://github.com/gohugoio/hugo"

@@ -3,7 +3,7 @@ description: Rewrite system package repositories to use a package cache
 
 inputs:
   pkg_cache:
-    description: Package cache hostname
+    description: Package cache host or base URL
     required: true
 
 runs:
@@ -15,11 +15,18 @@ runs:
         set -e
 
         PKG_CACHE="${{ inputs.pkg_cache }}"
-        echo "Using package cache: $PKG_CACHE"
+        PKG_CACHE_BASE="$PKG_CACHE"
+        case "$PKG_CACHE_BASE" in
+          http://*|https://*) ;;
+          *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+        esac
+        PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+        echo "Using package cache: $PKG_CACHE_BASE"
 
         rewrite_urls () {
           FILE="$1"
-          sudo sed -i -E "s|https?://([^/ ]+)|https://${PKG_CACHE}/\1|g" "$FILE"
+          sudo sed -i -E "s|https?://([^/ ]+)|${PKG_CACHE_BASE}/\1|g" "$FILE"
         }
 
         if command -v apt-get >/dev/null 2>&1; then
@@ -28,7 +35,7 @@ runs:
           rewrite_sources_file () {
             FILE="$1"
             sudo sed -i -E \
-              "s|URIs: https?://([^/ ]+)|URIs: https://${PKG_CACHE}/\1|g" "$FILE"
+              "s|URIs: https?://([^/ ]+)|URIs: ${PKG_CACHE_BASE}/\1|g" "$FILE"
           }
 
           find /etc/apt -type f -name "*.list" -print0 | while IFS= read -r -d '' f; do
@@ -39,7 +46,7 @@ runs:
             rewrite_sources_file "$f"
           done
 
-          grep -R "$PKG_CACHE" /etc/apt || true
+          grep -R "$PKG_CACHE_BASE" /etc/apt || true
 
         elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
           echo "Detected DNF/YUM system"
@@ -48,13 +55,13 @@ runs:
             rewrite_urls "$f"
           done
 
-          grep -R "$PKG_CACHE" /etc/yum.repos.d || true
+          grep -R "$PKG_CACHE_BASE" /etc/yum.repos.d || true
 
         elif command -v apk >/dev/null 2>&1; then
           echo "Detected Alpine system"
 
           sudo sed -i -E \
-            "s|https?://([^/ ]+)|https://${PKG_CACHE}/\1|g" /etc/apk/repositories
+            "s|https?://([^/ ]+)|${PKG_CACHE_BASE}/\1|g" /etc/apk/repositories
 
           cat /etc/apk/repositories
 
@@ -65,7 +72,7 @@ runs:
             rewrite_urls "$f"
           done
 
-          grep -R "$PKG_CACHE" /etc/zypp/repos.d || true
+          grep -R "$PKG_CACHE_BASE" /etc/zypp/repos.d || true
 
         else
           echo "Unsupported package manager"

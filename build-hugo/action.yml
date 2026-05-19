@@ -18,7 +18,7 @@ inputs:
     default: ""
 
   pkg_cache:
-    description: Package cache hostname
+    description: Package cache host or base URL
     required: false
     default: ""
 
@@ -40,9 +40,17 @@ runs:
         # Setup Go module proxy (CRITICAL)
         # ----------------------------------------
         if [ -n "${{ inputs.pkg_cache }}" ]; then
+          PKG_CACHE="${{ inputs.pkg_cache }}"
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
           echo "Using pkg-cache for Go modules"
 
-          export GOPROXY="https://${{ inputs.pkg_cache }}/proxy.golang.org,direct"
+          export GOPROXY="${PKG_CACHE_BASE}/proxy.golang.org,direct"
           export GOSUMDB="sum.golang.org"
 
           # Optional: avoid direct GitHub bypass for some modules

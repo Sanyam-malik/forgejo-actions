@@ -3,7 +3,7 @@ description: Install Gradle optionally using pkg-cache mirror
 
 inputs:
   pkg_cache:
-    description: Package cache hostname
+    description: Package cache host or base URL
     required: false
     default: ""
 
@@ -30,7 +30,14 @@ runs:
         VERSION="${{ inputs.gradle_version }}"
 
         if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/services.gradle.org"
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          BASE_URL="${PKG_CACHE_BASE}/services.gradle.org"
           echo "Using pkg-cache mirror: $BASE_URL"
         else
           BASE_URL="https://services.gradle.org"

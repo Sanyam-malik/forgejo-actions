@@ -3,7 +3,7 @@ description: Install Maven with optional pkg-cache mirror
 
 inputs:
   pkg_cache:
-    description: Package cache hostname (reverse proxy cache)
+    description: Package cache host or base URL (reverse proxy cache)
     required: false
     default: ""
 
@@ -54,11 +54,18 @@ runs:
         FILE="apache-maven-${VERSION}-bin.tar.gz"
 
         if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
           echo "Using pkg-cache for ALL sources"
 
           URLS=(
-            "https://${PKG_CACHE}/dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
-            "https://${PKG_CACHE}/archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+            "${PKG_CACHE_BASE}/dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+            "${PKG_CACHE_BASE}/archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
           )
         else
           echo "Using public Apache sources"

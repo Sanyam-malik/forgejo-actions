@@ -8,7 +8,7 @@ inputs:
     default: "20"
 
   pkg_cache:
-    description: pkg-cache hostname
+    description: pkg-cache host or base URL
     required: false
     default: ""
 
@@ -31,7 +31,14 @@ runs:
         fi
 
         if [ -n "$PKG_CACHE" ]; then
-          BASE_URL="https://${PKG_CACHE}/nodejs.org"
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          BASE_URL="${PKG_CACHE_BASE}/nodejs.org"
           echo "Using pkg-cache mirror: $BASE_URL"
         else
           BASE_URL="https://nodejs.org"
@@ -76,7 +83,7 @@ runs:
 
         # Configure npm registry to use pkg-cache
         if [ -n "$PKG_CACHE" ]; then
-          NPM_REGISTRY="https://${PKG_CACHE}/registry.npmjs.org/"
+          NPM_REGISTRY="${PKG_CACHE_BASE}/registry.npmjs.org/"
 
           echo "Configuring npm to use pkg-cache registry: $NPM_REGISTRY"
 
