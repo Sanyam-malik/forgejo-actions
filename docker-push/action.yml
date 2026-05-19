@@ -21,7 +21,13 @@ runs:
   steps:
     - shell: bash
       run: |
-        IMAGE="${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
+        REGISTRY="${{ inputs.registry }}"
+
+        # Remove http:// or https:// if present
+        REGISTRY="${REGISTRY#http://}"
+        REGISTRY="${REGISTRY#https://}"
+
+        IMAGE="${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
 
         echo "Preparing to push Docker image: $IMAGE"
 

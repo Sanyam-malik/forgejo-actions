@@ -25,7 +25,13 @@ runs:
   steps:
     - shell: bash
       run: |
+        REGISTRY="${{ inputs.registry }}"
+
+        # Remove http:// or https:// if present
+        REGISTRY="${REGISTRY#http://}"
+        REGISTRY="${REGISTRY#https://}"
+
         docker build \
           ${{ inputs.build_args }} \
-          -t "${{ inputs.registry }}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+          -t "${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
           .

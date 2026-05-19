@@ -17,7 +17,13 @@ runs:
   steps:
     - shell: bash
       run: |
+        REGISTRY="${{ inputs.registry }}"
+
+        # Remove http:// or https:// if present
+        REGISTRY="${REGISTRY#http://}"
+        REGISTRY="${REGISTRY#https://}"
+
         echo "${{ inputs.token }}" | docker login \
-          "${{ inputs.registry }}" \
+          "$REGISTRY" \
           -u "${{ inputs.username }}" \
           --password-stdin
