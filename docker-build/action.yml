@@ -1,6 +1,5 @@
 name: Docker Build
 description: Build Docker image
-
 inputs:
   registry:
     description: Registry URL
@@ -19,19 +18,21 @@ inputs:
     description: Additional docker build arguments (e.g. --build-arg FOO=bar)
     required: false
     default: ""
-
+  platforms:
+    description: Comma-separated list of target platforms (e.g. linux/amd64,linux/arm64,linux/arm/v7)
+    required: false
+    default: linux/amd64,linux/arm64,linux/arm/v7
 runs:
   using: composite
   steps:
     - shell: bash
       run: |
         REGISTRY="${{ inputs.registry }}"
-
-        # Remove http:// or https:// if present
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
-
-        docker build \
+        docker buildx build \
+          --platform "${{ inputs.platforms }}" \
           ${{ inputs.build_args }} \
           -t "${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+          --output type=image,push=false \
           .
