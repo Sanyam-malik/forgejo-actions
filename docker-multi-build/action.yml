@@ -1,0 +1,39 @@
+name: Docker Build
+description: Build Docker image
+inputs:
+  registry:
+    description: Registry URL
+    required: true
+  namespace:
+    description: Registry namespace
+    required: true
+  image:
+    description: Image name
+    required: true
+  tag:
+    description: Image tag
+    required: false
+    default: latest
+  build_args:
+    description: Additional docker build arguments (e.g. --build-arg FOO=bar)
+    required: false
+    default: ""
+  platforms:
+    description: Comma-separated list of target platforms (e.g. linux/amd64,linux/arm64,linux/arm/v7)
+    required: false
+    default: linux/amd64,linux/arm64,linux/arm/v7
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        REGISTRY="${{ inputs.registry }}"
+        REGISTRY="${REGISTRY#http://}"
+        REGISTRY="${REGISTRY#https://}"
+        docker buildx create --use --driver docker-container
+        docker buildx build \
+          --platform "${{ inputs.platforms }}" \
+          ${{ inputs.build_args }} \
+          -t "${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+          --output type=image,push=true \
+          .
