@@ -30,6 +30,7 @@ runs:
         REGISTRY="${{ inputs.registry }}"
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
+        docker buildx create --use --driver docker-container
         docker buildx build \
           --platform "${{ inputs.platforms }}" \
           ${{ inputs.build_args }} \
