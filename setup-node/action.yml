@@ -89,6 +89,8 @@ runs:
 
           npm config set registry "$NPM_REGISTRY"
 
+          npm config set ignore-scripts true
+
           # Also create npmrc so future shells respect it
           echo "registry=$NPM_REGISTRY" >> "$HOME/.npmrc"
 

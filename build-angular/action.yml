@@ -45,6 +45,8 @@ runs:
 
         echo "Installing dependencies"
 
+        npm config set ignore-scripts true
+
         if [ "${{ inputs.force_install }}" = "true" ]; then
           echo "Using npm install --force"
           npm install --force
