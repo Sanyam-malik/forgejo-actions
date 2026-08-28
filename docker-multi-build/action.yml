@@ -36,6 +36,7 @@ inputs:
 
 runs:
   using: composite
+
   steps:
     - shell: bash
       run: |
@@ -51,8 +52,8 @@ runs:
             apk add --no-cache jq
 
           elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y jq
+            apt-get update -qq
+            apt-get install -y -qq jq
 
           elif command -v pacman >/dev/null 2>&1; then
             pacman -Sy --noconfirm jq
@@ -80,14 +81,17 @@ runs:
         IMAGE_NAME="${{ inputs.image }}"
         TAG="${{ inputs.tag }}"
 
-        IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
-
         REQUESTED_PLATFORMS="${{ inputs.platforms }}"
         ON_UNSUPPORTED_PLATFORM="${{ inputs.on_unsupported_platform }}"
 
         # ------------------------------------------------------------
         # Validate inputs
         # ------------------------------------------------------------
+        if [[ -z "${REGISTRY}" ]]; then
+          echo "::error::registry input is empty"
+          exit 1
+        fi
+
         if [[ -z "${NAMESPACE}" ]]; then
           echo "::error::namespace input is empty"
           exit 1
@@ -104,6 +108,8 @@ runs:
           exit 1
         fi
 
+        IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+
         # ------------------------------------------------------------
         # Create Buildx builder
         # ------------------------------------------------------------
@@ -113,6 +119,9 @@ runs:
           --driver docker-container \
           >/dev/null 2>&1 || docker buildx use docker-build
 
+        # ------------------------------------------------------------
+        # Parse requested platforms
+        # ------------------------------------------------------------
         supported_platforms=""
 
         IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
@@ -152,23 +161,51 @@ runs:
           inspect_output="$(
             docker buildx imagetools inspect \
               "${base_image}" \
-              2>/dev/null || true
-          )"
+              --raw \
+              2>&1
+          )" || {
+            echo "::error::Unable to inspect ${base_image}"
+            echo "${inspect_output}"
+            exit 1
+          }
 
           if [[ -z "${inspect_output}" ]]; then
-            echo "::error::Unable to inspect ${base_image}"
+            echo "::error::Empty manifest returned for ${base_image}"
             exit 1
           fi
 
+          # ----------------------------------------------------------
+          # Extract platforms from OCI/Docker manifest index.
+          #
+          # Supports:
+          #   linux/amd64
+          #   linux/arm64
+          #   linux/arm/v7
+          #   linux/arm/v6
+          #   etc.
+          # ----------------------------------------------------------
           platforms_for_image="$(
             echo "${inspect_output}" |
-              grep -E '^[[:space:]]*(linux|windows|darwin)/' |
-              sed 's/^[[:space:]]*//' |
+              jq -r '
+                if (.manifests? | type) == "array" then
+                  .manifests[]
+                  | select(.platform != null)
+                  | [
+                      .platform.os,
+                      .platform.architecture,
+                      (.platform.variant // "")
+                    ]
+                  | map(select(length > 0))
+                  | join("/")
+                else
+                  empty
+                end
+              ' |
               sort -u
           )"
 
           if [[ -z "${platforms_for_image}" ]]; then
-            echo "  No platform list found for ${base_image}"
+            echo "  No multi-platform manifest found."
           else
             echo "  Available platforms:"
             echo "${platforms_for_image}" | sed 's/^/    /'
@@ -211,6 +248,7 @@ runs:
             else
               supported_platforms="${supported_platforms},${platform}"
             fi
+
           else
             if [[ "${ON_UNSUPPORTED_PLATFORM}" == "skip" ]]; then
               echo "::warning::${platform} image cannot be built, skipping platform"
