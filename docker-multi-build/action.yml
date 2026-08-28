@@ -84,6 +84,9 @@ runs:
         REQUESTED_PLATFORMS="${{ inputs.platforms }}"
         ON_UNSUPPORTED_PLATFORM="${{ inputs.on_unsupported_platform }}"
 
+        # ------------------------------------------------------------
+        # Validate inputs
+        # ------------------------------------------------------------
         if [[ -z "${REGISTRY}" ]]; then
           echo "::error::registry input is empty"
           exit 1
@@ -117,72 +120,62 @@ runs:
           >/dev/null 2>&1 || docker buildx use docker-build
 
         # ------------------------------------------------------------
-        # Parse platforms
+        # Parse requested platforms
         # ------------------------------------------------------------
         IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
 
-        built_images=()
+        supported_platforms=""
 
         echo ""
         echo "Requested platforms: ${REQUESTED_PLATFORMS}"
         echo "On unsupported platform: ${ON_UNSUPPORTED_PLATFORM}"
-        echo "Image: ${IMAGE}"
         echo ""
 
         # ------------------------------------------------------------
-        # Build each platform independently
+        # Validate each platform by actually solving the Dockerfile.
+        #
+        # IMPORTANT:
+        #   type=cacheonly means NOTHING is pushed.
+        #
+        # This catches failures such as:
+        #   - unavailable packages
+        #   - unsupported binaries
+        #   - failed RUN commands
+        #   - architecture-specific compilation errors
+        #   - unsupported base images
         # ------------------------------------------------------------
         for platform in "${platforms[@]}"; do
           platform="$(echo "${platform}" | xargs)"
 
           [[ -z "${platform}" ]] && continue
 
-          # Convert platform into a safe temporary tag.
-          #
-          # linux/amd64   -> amd64
-          # linux/arm64   -> arm64
-          # linux/arm/v7  -> arm-v7
-          #
-          platform_tag="${platform//\//-}"
-
-          temporary_image="${IMAGE}-${platform_tag}"
-
           echo "============================================================"
-          echo "Building platform: ${platform}"
-          echo "Temporary image: ${temporary_image}"
+          echo "Checking platform: ${platform}"
           echo "============================================================"
-          echo ""
-
-          build_log="$(mktemp)"
 
           if docker buildx build \
               --builder docker-build \
               --platform "${platform}" \
               ${{ inputs.build_args }} \
-              -t "${temporary_image}" \
-              --output type=image,push=true \
-              . \
-              2>&1 | tee "${build_log}"; then
+              --output type=cacheonly \
+              .; then
 
-            echo ""
-            echo "✓ ${platform} image built successfully"
+            echo "✓ ${platform} image can be built"
 
-            built_images+=("${temporary_image}")
+            if [[ -z "${supported_platforms}" ]]; then
+              supported_platforms="${platform}"
+            else
+              supported_platforms="${supported_platforms},${platform}"
+            fi
 
           else
-            echo ""
-            echo "✗ ${platform} image cannot be built"
-
             if [[ "${ON_UNSUPPORTED_PLATFORM}" == "skip" ]]; then
               echo "::warning::${platform} image cannot be built, skipping platform"
             else
               echo "::error::${platform} image cannot be built"
-              rm -f "${build_log}"
               exit 1
             fi
           fi
-
-          rm -f "${build_log}"
 
           echo ""
         done
@@ -190,26 +183,27 @@ runs:
         # ------------------------------------------------------------
         # Make sure at least one platform succeeded
         # ------------------------------------------------------------
-        if [[ ${#built_images[@]} -eq 0 ]]; then
-          echo "::error::None of the requested platforms could be built."
+        if [[ -z "${supported_platforms}" ]]; then
+          echo "::error::None of the requested platforms can be built."
           exit 1
         fi
 
-        echo "Successfully built platforms:"
-        printf '  %s\n' "${built_images[@]}"
+        echo "============================================================"
+        echo "Supported platforms: ${supported_platforms}"
+        echo "Building and pushing: ${IMAGE}"
+        echo "============================================================"
         echo ""
 
         # ------------------------------------------------------------
-        # Create final multi-platform manifest
+        # Final build
+        #
+        # This is the ONLY command that pushes an image.
+        # No platform-specific tags are created.
         # ------------------------------------------------------------
-        echo "Creating multi-platform image:"
-        echo "${IMAGE}"
-        echo ""
-
-        docker buildx imagetools create \
+        docker buildx build \
+          --builder docker-build \
+          --platform "${supported_platforms}" \
+          ${{ inputs.build_args }} \
           -t "${IMAGE}" \
-          "${built_images[@]}"
-
-        echo ""
-        echo "✓ Multi-platform image created successfully"
-        echo "  ${IMAGE}"
+          --output type=image,push=true \
+          .
