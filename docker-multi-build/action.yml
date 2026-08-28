@@ -27,7 +27,7 @@ inputs:
   platforms:
     description: Comma-separated list of target platforms
     required: false
-    default: linux/amd64,linux/arm64,linux/arm/v7
+    default: linux/amd64,linux/arm64
 
   on_unsupported_platform:
     description: What to do when a platform is not available. Allowed values are skip or error.
