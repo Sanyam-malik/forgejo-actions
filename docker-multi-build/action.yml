@@ -27,7 +27,7 @@ inputs:
   platforms:
     description: Comma-separated list of target platforms
     required: false
-    default: linux/amd64,linux/arm64
+    default: linux/amd64,linux/arm64,linux/arm/v7
 
   on_unsupported_platform:
     description: What to do when a platform is not available. Allowed values are skip or error.
@@ -42,39 +42,31 @@ runs:
         set -euo pipefail
 
         # ------------------------------------------------------------
-        # Install jq if it is not already installed.
-        # Supports Alpine, Debian/Ubuntu, Arch, RHEL/Fedora/CentOS.
+        # Install dependencies
         # ------------------------------------------------------------
-        if ! command -v jq >/dev/null 2>&1; then
-          echo "jq not found. Installing..."
+        echo "Installing dependencies..."
 
+        if ! command -v jq >/dev/null 2>&1; then
           if command -v apk >/dev/null 2>&1; then
-            echo "Detected Alpine Linux"
             apk add --no-cache jq
 
           elif command -v apt-get >/dev/null 2>&1; then
-            echo "Detected Debian/Ubuntu"
             apt-get update
             apt-get install -y jq
 
           elif command -v pacman >/dev/null 2>&1; then
-            echo "Detected Arch Linux"
             pacman -Sy --noconfirm jq
 
           elif command -v dnf >/dev/null 2>&1; then
-            echo "Detected Fedora/RHEL"
             dnf install -y jq
 
           elif command -v yum >/dev/null 2>&1; then
-            echo "Detected CentOS/RHEL"
             yum install -y jq
 
           else
-            echo "::error::jq is not installed and no supported package manager was found."
+            echo "::error::Unable to install dependencies. No supported package manager found."
             exit 1
           fi
-        else
-          echo "jq is already installed: $(jq --version)"
         fi
 
         # ------------------------------------------------------------
@@ -150,7 +142,45 @@ runs:
         echo ""
 
         # ------------------------------------------------------------
-        # Check each requested platform
+        # Inspect every base image once
+        # ------------------------------------------------------------
+        declare -A image_platforms
+
+        for base_image in "${base_images[@]}"; do
+          echo "Inspecting ${base_image}..."
+
+          inspect_output="$(
+            docker buildx imagetools inspect \
+              "${base_image}" \
+              2>/dev/null || true
+          )"
+
+          if [[ -z "${inspect_output}" ]]; then
+            echo "::error::Unable to inspect ${base_image}"
+            exit 1
+          fi
+
+          platforms_for_image="$(
+            echo "${inspect_output}" |
+              grep -E '^[[:space:]]*(linux|windows|darwin)/' |
+              sed 's/^[[:space:]]*//' |
+              sort -u
+          )"
+
+          if [[ -z "${platforms_for_image}" ]]; then
+            echo "  No platform list found for ${base_image}"
+          else
+            echo "  Available platforms:"
+            echo "${platforms_for_image}" | sed 's/^/    /'
+          fi
+
+          image_platforms["${base_image}"]="${platforms_for_image}"
+
+          echo ""
+        done
+
+        # ------------------------------------------------------------
+        # Check requested platforms
         # ------------------------------------------------------------
         for platform in "${platforms[@]}"; do
           platform="$(echo "${platform}" | xargs)"
@@ -162,53 +192,9 @@ runs:
           platform_supported=true
 
           for base_image in "${base_images[@]}"; do
-            echo "  Checking ${base_image}..."
+            available="${image_platforms["${base_image}"]}"
 
-            manifest="$(
-              docker buildx imagetools inspect \
-                "${base_image}" \
-                --raw 2>/dev/null || true
-            )"
-
-            if [[ -z "${manifest}" ]]; then
-              echo "  ✗ Unable to inspect ${base_image}"
-              platform_supported=false
-              break
-            fi
-
-            os="${platform%%/*}"
-            remaining="${platform#*/}"
-            arch="${remaining%%/*}"
-            variant=""
-
-            if [[ "${remaining}" == */* ]]; then
-              variant="${remaining#*/}"
-            fi
-
-            found=false
-
-            while IFS= read -r manifest_platform; do
-              [[ -z "${manifest_platform}" ]] && continue
-
-              manifest_os="$(echo "${manifest_platform}" | jq -r '.os // empty')"
-              manifest_arch="$(echo "${manifest_platform}" | jq -r '.architecture // empty')"
-              manifest_variant="$(echo "${manifest_platform}" | jq -r '.variant // empty')"
-
-              if [[ "${manifest_os}" == "${os}" &&
-                    "${manifest_arch}" == "${arch}" ]]; then
-
-                if [[ -z "${variant}" ||
-                      "${manifest_variant}" == "${variant}" ]]; then
-                  found=true
-                  break
-                fi
-              fi
-            done < <(
-              echo "${manifest}" |
-                jq -c '.manifests[]? | .platform // empty'
-            )
-
-            if [[ "${found}" == "true" ]]; then
+            if echo "${available}" | grep -Fxq "${platform}"; then
               echo "  ✓ ${base_image} provides ${platform}"
             else
               echo "  ✗ ${base_image} does not provide ${platform}"
