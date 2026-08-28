@@ -1,39 +1,114 @@
 name: Docker Build
 description: Build Docker image
+
 inputs:
   registry:
     description: Registry URL
     required: true
+
   namespace:
     description: Registry namespace
     required: true
+
   image:
     description: Image name
     required: true
+
   tag:
     description: Image tag
     required: false
     default: latest
+
   build_args:
-    description: Additional docker build arguments (e.g. --build-arg FOO=bar)
+    description: Additional docker build arguments
     required: false
     default: ""
+
   platforms:
-    description: Comma-separated list of target platforms (e.g. linux/amd64,linux/arm64,linux/arm/v7)
+    description: Comma-separated list of target platforms
     required: false
     default: linux/amd64,linux/arm64,linux/arm/v7
+
+  platform_failure:
+    description: What to do when a platform cannot be built. Allowed values are skip or error.
+    required: false
+    default: skip
+
 runs:
   using: composite
   steps:
     - shell: bash
       run: |
+        set -euo pipefail
+
         REGISTRY="${{ inputs.registry }}"
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
-        docker buildx create --use --driver docker-container
+
+        IMAGE="${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
+        REQUESTED_PLATFORMS="${{ inputs.platforms }}"
+        PLATFORM_FAILURE="${{ inputs.platform_failure }}"
+
+        if [[ "${PLATFORM_FAILURE}" != "skip" && "${PLATFORM_FAILURE}" != "error" ]]; then
+          echo "::error::Invalid platform_failure '${PLATFORM_FAILURE}'. Expected 'skip' or 'error'."
+          exit 1
+        fi
+
+        docker buildx create \
+          --use \
+          --driver docker-container
+
+        supported_platforms=""
+
+        IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
+
+        echo "Requested platforms: ${REQUESTED_PLATFORMS}"
+        echo "Platform failure mode: ${PLATFORM_FAILURE}"
+        echo ""
+
+        for platform in "${platforms[@]}"; do
+          platform="$(echo "${platform}" | xargs)"
+
+          [[ -z "${platform}" ]] && continue
+
+          echo "Checking platform: ${platform}"
+
+          if docker buildx build \
+              --platform "${platform}" \
+              ${{ inputs.build_args }} \
+              --output type=cacheonly \
+              .; then
+
+            echo "✓ ${platform} image can be built"
+
+            if [[ -z "${supported_platforms}" ]]; then
+              supported_platforms="${platform}"
+            else
+              supported_platforms="${supported_platforms},${platform}"
+            fi
+          else
+            if [[ "${PLATFORM_FAILURE}" == "skip" ]]; then
+              echo "::warning::${platform} image cannot be built, skipping platform"
+            else
+              echo "::error::${platform} image cannot be built"
+              exit 1
+            fi
+          fi
+        done
+
+        if [[ -z "${supported_platforms}" ]]; then
+          echo "::error::None of the requested platforms can be built."
+          exit 1
+        fi
+
+        echo ""
+        echo "Supported platforms: ${supported_platforms}"
+        echo "Building and pushing: ${IMAGE}"
+        echo ""
+
         docker buildx build \
-          --platform "${{ inputs.platforms }}" \
+          --platform "${supported_platforms}" \
           ${{ inputs.build_args }} \
-          -t "${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+          -t "${IMAGE}" \
           --output type=image,push=true \
           .
