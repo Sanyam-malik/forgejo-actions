@@ -45,9 +45,24 @@ runs:
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
 
-        IMAGE="${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}"
+        NAMESPACE="${{ inputs.namespace }}"
+        IMAGE_NAME="${{ inputs.image }}"
+        TAG="${{ inputs.tag }}"
+
+        IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+
         REQUESTED_PLATFORMS="${{ inputs.platforms }}"
         PLATFORM_FAILURE="${{ inputs.platform_failure }}"
+
+        if [[ -z "${NAMESPACE}" ]]; then
+          echo "::error::namespace input is empty"
+          exit 1
+        fi
+
+        if [[ -z "${IMAGE_NAME}" ]]; then
+          echo "::error::image input is empty"
+          exit 1
+        fi
 
         if [[ "${PLATFORM_FAILURE}" != "skip" && "${PLATFORM_FAILURE}" != "error" ]]; then
           echo "::error::Invalid platform_failure '${PLATFORM_FAILURE}'. Expected 'skip' or 'error'."
@@ -58,7 +73,7 @@ runs:
           --name docker-build \
           --use \
           --driver docker-container \
-          >/dev/null 2>&1 || true
+          >/dev/null 2>&1 || docker buildx use docker-build
 
         supported_platforms=""
 
@@ -68,7 +83,7 @@ runs:
         echo "Platform failure mode: ${PLATFORM_FAILURE}"
         echo ""
 
-        # Extract all FROM images from the Dockerfile.
+        # Get all FROM images.
         mapfile -t base_images < <(
           grep -Eih '^[[:space:]]*FROM[[:space:]]+' Dockerfile \
             | sed -E 's/^[[:space:]]*FROM[[:space:]]+([^[:space:]]+).*/\1/' \
@@ -97,19 +112,66 @@ runs:
           for base_image in "${base_images[@]}"; do
             echo "  Checking ${base_image}..."
 
-            if ! docker buildx imagetools inspect "${base_image}" \
-                --format '{{range .Manifest}}{{println .Platform.OS .Platform.Architecture .Platform.Variant}}{{end}}' \
-                2>/dev/null \
-                | grep -qF "$(echo "${platform}" | sed 's|/| |g')"; then
+            manifest="$(
+              docker buildx imagetools inspect \
+                "${base_image}" \
+                --raw 2>/dev/null || true
+            )"
 
+            if [[ -z "${manifest}" ]]; then
+              echo "  ✗ Unable to inspect ${base_image}"
               platform_supported=false
+              break
+            fi
+
+            os="${platform%%/*}"
+            remaining="${platform#*/}"
+            arch="${remaining%%/*}"
+
+            variant=""
+
+            if [[ "${remaining}" == */* ]]; then
+              variant="${remaining#*/}"
+            fi
+
+            if [[ "${variant}" == "v7" ]]; then
+              variant="v7"
+            fi
+
+            found=false
+
+            while IFS= read -r manifest_platform; do
+              [[ -z "${manifest_platform}" ]] && continue
+
+              manifest_os="$(echo "${manifest_platform}" | jq -r '.os // empty')"
+              manifest_arch="$(echo "${manifest_platform}" | jq -r '.architecture // empty')"
+              manifest_variant="$(echo "${manifest_platform}" | jq -r '.variant // empty')"
+
+              if [[ "${manifest_os}" == "${os}" &&
+                    "${manifest_arch}" == "${arch}" ]]; then
+
+                if [[ -z "${variant}" ||
+                      "${manifest_variant}" == "${variant}" ]]; then
+                  found=true
+                  break
+                fi
+              fi
+            done < <(
+              echo "${manifest}" |
+                jq -c '.manifests[]? | .platform // empty'
+            )
+
+            if [[ "${found}" == "true" ]]; then
+              echo "  ✓ ${base_image} provides ${platform}"
+            else
               echo "  ✗ ${base_image} does not provide ${platform}"
+              platform_supported=false
               break
             fi
           done
 
           if [[ "${platform_supported}" == "true" ]]; then
-            echo "✓ ${platform} is available"
+            echo "✓ ${platform} image can be built"
 
             if [[ -z "${supported_platforms}" ]]; then
               supported_platforms="${platform}"
@@ -135,6 +197,7 @@ runs:
 
         echo "Supported platforms: ${supported_platforms}"
         echo "Building and pushing: ${IMAGE}"
+        echo ""
 
         docker buildx build \
           --builder docker-build \
