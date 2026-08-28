@@ -120,8 +120,48 @@ runs:
           >/dev/null 2>&1 || docker buildx use docker-build
 
         # ------------------------------------------------------------
-        # Parse requested platforms
+        # Normalize platform names.
+        #
+        # linux/arm64     == linux/arm64/v8
+        # linux/amd64     == linux/amd64
+        # linux/arm/v7    == linux/arm/v7
+        # linux/arm/v6    == linux/arm/v6
         # ------------------------------------------------------------
+        normalize_platform() {
+          local platform="$1"
+
+          platform="${platform// /}"
+
+          # Remove leading/trailing whitespace.
+          platform="$(echo "${platform}" | xargs)"
+
+          case "${platform}" in
+            linux/arm64|linux/arm64/v8)
+              echo "linux/arm64"
+              ;;
+
+            linux/amd64|linux/amd64/*)
+              echo "linux/amd64"
+              ;;
+
+            linux/arm/v7)
+              echo "linux/arm/v7"
+              ;;
+
+            linux/arm/v6)
+              echo "linux/arm/v6"
+              ;;
+
+            linux/arm/v5)
+              echo "linux/arm/v5"
+              ;;
+
+            *)
+              echo "${platform}"
+              ;;
+          esac
+        }
+
         supported_platforms=""
 
         IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
@@ -174,16 +214,7 @@ runs:
             exit 1
           fi
 
-          # ----------------------------------------------------------
-          # Extract platforms from OCI/Docker manifest index.
-          #
-          # Supports:
-          #   linux/amd64
-          #   linux/arm64
-          #   linux/arm/v7
-          #   linux/arm/v6
-          #   etc.
-          # ----------------------------------------------------------
+          # Extract all manifest platforms and normalize them.
           platforms_for_image="$(
             echo "${inspect_output}" |
               jq -r '
@@ -201,6 +232,10 @@ runs:
                   empty
                 end
               ' |
+              while IFS= read -r manifest_platform; do
+                [[ -z "${manifest_platform}" ]] && continue
+                normalize_platform "${manifest_platform}"
+              done |
               sort -u
           )"
 
@@ -220,7 +255,7 @@ runs:
         # Check requested platforms
         # ------------------------------------------------------------
         for platform in "${platforms[@]}"; do
-          platform="$(echo "${platform}" | xargs)"
+          platform="$(normalize_platform "${platform}")"
 
           [[ -z "${platform}" ]] && continue
 
