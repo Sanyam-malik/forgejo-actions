@@ -55,8 +55,10 @@ runs:
         fi
 
         docker buildx create \
+          --name docker-build \
           --use \
-          --driver docker-container
+          --driver docker-container \
+          >/dev/null 2>&1
 
         supported_platforms=""
 
@@ -74,10 +76,11 @@ runs:
           echo "Checking platform: ${platform}"
 
           if docker buildx build \
+              --builder docker-build \
               --platform "${platform}" \
               ${{ inputs.build_args }} \
               --output type=cacheonly \
-              .; then
+              . >/tmp/docker-build-output.log 2>&1; then
 
             echo "✓ ${platform} image can be built"
 
@@ -91,6 +94,7 @@ runs:
               echo "::warning::${platform} image cannot be built, skipping platform"
             else
               echo "::error::${platform} image cannot be built"
+              cat /tmp/docker-build-output.log
               exit 1
             fi
           fi
@@ -107,6 +111,7 @@ runs:
         echo ""
 
         docker buildx build \
+          --builder docker-build \
           --platform "${supported_platforms}" \
           ${{ inputs.build_args }} \
           -t "${IMAGE}" \
