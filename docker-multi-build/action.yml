@@ -30,7 +30,7 @@ inputs:
     default: linux/amd64,linux/arm64,linux/arm/v7
 
   platform_failure:
-    description: What to do when a platform cannot be built. Allowed values are skip or error.
+    description: What to do when a platform is not available. Allowed values are skip or error.
     required: false
     default: skip
 
@@ -58,7 +58,7 @@ runs:
           --name docker-build \
           --use \
           --driver docker-container \
-          >/dev/null 2>&1
+          >/dev/null 2>&1 || true
 
         supported_platforms=""
 
@@ -68,6 +68,23 @@ runs:
         echo "Platform failure mode: ${PLATFORM_FAILURE}"
         echo ""
 
+        # Extract all FROM images from the Dockerfile.
+        mapfile -t base_images < <(
+          grep -Eih '^[[:space:]]*FROM[[:space:]]+' Dockerfile \
+            | sed -E 's/^[[:space:]]*FROM[[:space:]]+([^[:space:]]+).*/\1/' \
+            | grep -v '^\$' \
+            | sort -u
+        )
+
+        if [[ ${#base_images[@]} -eq 0 ]]; then
+          echo "::error::No FROM image found in Dockerfile."
+          exit 1
+        fi
+
+        echo "Base images:"
+        printf '  %s\n' "${base_images[@]}"
+        echo ""
+
         for platform in "${platforms[@]}"; do
           platform="$(echo "${platform}" | xargs)"
 
@@ -75,14 +92,24 @@ runs:
 
           echo "Checking platform: ${platform}"
 
-          if docker buildx build \
-              --builder docker-build \
-              --platform "${platform}" \
-              ${{ inputs.build_args }} \
-              --output type=cacheonly \
-              . >/tmp/docker-build-output.log 2>&1; then
+          platform_supported=true
 
-            echo "✓ ${platform} image can be built"
+          for base_image in "${base_images[@]}"; do
+            echo "  Checking ${base_image}..."
+
+            if ! docker buildx imagetools inspect "${base_image}" \
+                --format '{{range .Manifest}}{{println .Platform.OS .Platform.Architecture .Platform.Variant}}{{end}}' \
+                2>/dev/null \
+                | grep -qF "$(echo "${platform}" | sed 's|/| |g')"; then
+
+              platform_supported=false
+              echo "  ✗ ${base_image} does not provide ${platform}"
+              break
+            fi
+          done
+
+          if [[ "${platform_supported}" == "true" ]]; then
+            echo "✓ ${platform} is available"
 
             if [[ -z "${supported_platforms}" ]]; then
               supported_platforms="${platform}"
@@ -94,21 +121,20 @@ runs:
               echo "::warning::${platform} image cannot be built, skipping platform"
             else
               echo "::error::${platform} image cannot be built"
-              cat /tmp/docker-build-output.log
               exit 1
             fi
           fi
+
+          echo ""
         done
 
         if [[ -z "${supported_platforms}" ]]; then
-          echo "::error::None of the requested platforms can be built."
+          echo "::error::None of the requested platforms are available."
           exit 1
         fi
 
-        echo ""
         echo "Supported platforms: ${supported_platforms}"
         echo "Building and pushing: ${IMAGE}"
-        echo ""
 
         docker buildx build \
           --builder docker-build \
