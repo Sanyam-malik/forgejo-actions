@@ -120,6 +120,28 @@ runs:
           >/dev/null 2>&1 || docker buildx use docker-build
 
         # ------------------------------------------------------------
+        # Cleanup Buildx builder when this step exits.
+        #
+        # This runs on:
+        #   - successful build
+        #   - failed build
+        #   - unsupported platform with error
+        #   - any other exit from this shell
+        # ------------------------------------------------------------
+        cleanup() {
+          echo ""
+          echo "============================================================"
+          echo "Cleaning up Buildx builder"
+          echo "============================================================"
+
+          docker buildx rm --force docker-build >/dev/null 2>&1 || true
+
+          echo "Buildx cleanup completed."
+        }
+
+        trap cleanup EXIT
+
+        # ------------------------------------------------------------
         # Parse requested platforms
         # ------------------------------------------------------------
         IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
