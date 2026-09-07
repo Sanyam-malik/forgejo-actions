@@ -1,5 +1,5 @@
 name: Security Scan
-description: Run secrets and dependency vulnerability scans using Gitleaks and Trivy
+description: Run Gitleaks secret scanning and Trivy dependency scanning with a concise security summary
 
 inputs:
   trivy_version:
@@ -8,14 +8,9 @@ inputs:
     default: latest
 
   trivy_install_dir:
-    description: Directory to install the Trivy binary into.
+    description: Directory to install Trivy into.
     required: false
     default: /usr/local/bin
-
-  pkg_cache:
-    description: Package cache host or base URL to mirror GitHub releases through.
-    required: false
-    default: ""
 
   gitleaks_version:
     description: Gitleaks version to install. Defaults to the latest release.
@@ -23,12 +18,17 @@ inputs:
     default: latest
 
   gitleaks_install_dir:
-    description: Directory to install the Gitleaks binary into.
+    description: Directory to install Gitleaks into.
     required: false
     default: /usr/local/bin
 
+  pkg_cache:
+    description: Package cache host or base URL used to mirror GitHub releases.
+    required: false
+    default: ""
+
   scan_path:
-    description: Path to scan.
+    description: Path to scan for secrets and dependencies.
     required: false
     default: .
 
@@ -37,8 +37,18 @@ inputs:
     required: false
     default: HIGH,CRITICAL
 
+  fail_on:
+    description: Comma-separated severities that cause the action to fail.
+    required: false
+    default: HIGH,CRITICAL
+
+  vuln_type:
+    description: Vulnerability types to scan.
+    required: false
+    default: os,library
+
   ignore_unfixed:
-    description: Ignore vulnerabilities that do not have a fixed version.
+    description: Ignore vulnerabilities without an available fix.
     required: false
     default: "true"
 
@@ -47,19 +57,30 @@ inputs:
     required: false
     default: "true"
 
-  fail_on_vulnerabilities:
-    description: Fail the action when Trivy detects vulnerabilities.
-    required: false
-    default: "true"
-
 outputs:
   trivy_version:
-    description: The Trivy version that was installed.
+    description: Installed Trivy version
     value: ${{ steps.install-trivy.outputs.version }}
 
   gitleaks_version:
-    description: The Gitleaks version that was installed.
+    description: Installed Gitleaks version
     value: ${{ steps.install-gitleaks.outputs.version }}
+
+  json_report:
+    description: Trivy JSON report
+    value: ${{ steps.scan.outputs.json_report }}
+
+  table_report:
+    description: Trivy table report
+    value: ${{ steps.scan.outputs.table_report }}
+
+  secret_count:
+    description: Number of secrets detected
+    value: ${{ steps.scan.outputs.secret_count }}
+
+  vulnerability_count:
+    description: Number of vulnerabilities matching fail_on
+    value: ${{ steps.scan.outputs.vulnerability_count }}
 
 runs:
   using: composite
@@ -67,43 +88,49 @@ runs:
   steps:
 
     # ============================================================
-    # Install dependencies
+    # Dependencies
     # ============================================================
-    - name: Install scan dependencies
+    - name: Prepare dependencies
       shell: bash
       run: |
         set -euo pipefail
 
-        echo "Installing required dependencies..."
+        missing=()
 
         for dep in curl tar jq; do
-          if command -v "${dep}" >/dev/null 2>&1; then
-            echo "${dep} is already installed."
-            continue
-          fi
-
-          if command -v apk >/dev/null 2>&1; then
-            apk add --no-cache "${dep}"
-
-          elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq "${dep}"
-
-          elif command -v pacman >/dev/null 2>&1; then
-            pacman -Sy --noconfirm "${dep}"
-
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y "${dep}"
-
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y "${dep}"
-
-          else
-            echo "::error::Unable to install ${dep}."
-            echo "::error::No supported package manager found."
-            exit 1
+          if ! command -v "${dep}" >/dev/null 2>&1; then
+            missing+=("${dep}")
           fi
         done
+
+        if [[ "${#missing[@]}" -eq 0 ]]; then
+          echo "✓ Required dependencies are already installed."
+          exit 0
+        fi
+
+        echo "Installing: ${missing[*]}"
+
+        if command -v apk >/dev/null 2>&1; then
+          apk add --no-cache "${missing[@]}"
+
+        elif command -v apt-get >/dev/null 2>&1; then
+          apt-get update -qq
+          apt-get install -y -qq "${missing[@]}"
+
+        elif command -v pacman >/dev/null 2>&1; then
+          pacman -Sy --noconfirm "${missing[@]}"
+
+        elif command -v dnf >/dev/null 2>&1; then
+          dnf install -y "${missing[@]}"
+
+        elif command -v yum >/dev/null 2>&1; then
+          yum install -y "${missing[@]}"
+
+        else
+          echo "::error::Unable to install dependencies."
+          echo "::error::No supported package manager found."
+          exit 1
+        fi
 
     # ============================================================
     # Install Trivy
@@ -118,35 +145,22 @@ runs:
       run: |
         set -euo pipefail
 
-        echo "Installing Trivy..."
-
-        # ----------------------------------------------------------
-        # Skip if requested version already exists
-        # ----------------------------------------------------------
         if command -v trivy >/dev/null 2>&1; then
           CURRENT_VERSION="$(
             trivy --version |
-              head -n1 |
-              awk '{print $2}'
+            head -n1 |
+            awk '{print $2}'
           )"
 
           if [[ "${REQUESTED_VERSION}" == "latest" ||
                 "${REQUESTED_VERSION#v}" == "${CURRENT_VERSION#v}" ]]; then
 
-            echo "Trivy ${CURRENT_VERSION} is already installed."
-
+            echo "✓ Trivy ${CURRENT_VERSION} already installed."
             echo "version=${CURRENT_VERSION}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-
-          echo "Trivy ${CURRENT_VERSION} is installed."
-          echo "Requested version: ${REQUESTED_VERSION}"
-          echo "Reinstalling..."
         fi
 
-        # ----------------------------------------------------------
-        # Resolve OS
-        # ----------------------------------------------------------
         OS="$(uname -s)"
 
         case "${OS}" in
@@ -162,67 +176,49 @@ runs:
             ;;
         esac
 
-        # ----------------------------------------------------------
-        # Resolve architecture
-        # ----------------------------------------------------------
         case "$(uname -m)" in
           x86_64|amd64)
             ARCH="64bit"
             ;;
-
           aarch64|arm64)
             ARCH="ARM64"
             ;;
-
           armv7l|armv6l)
             ARCH="ARM"
             ;;
-
           *)
             echo "::error::Unsupported architecture: $(uname -m)"
             exit 1
             ;;
         esac
 
-        # ----------------------------------------------------------
-        # Configure release URL
-        # ----------------------------------------------------------
         if [[ -n "${PKG_CACHE}" ]]; then
-          PKG_CACHE_BASE="${PKG_CACHE}"
+          CACHE="${PKG_CACHE}"
 
-          case "${PKG_CACHE_BASE}" in
-            http://*|https://*)
-              ;;
-            *)
-              PKG_CACHE_BASE="https://${PKG_CACHE_BASE}"
-              ;;
+          case "${CACHE}" in
+            http://*|https://*) ;;
+            *) CACHE="https://${CACHE}" ;;
           esac
 
-          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+          CACHE="${CACHE%/}"
 
-          BASE_URL="${PKG_CACHE_BASE}/github.com/aquasecurity/trivy"
-          API_BASE_URL="${PKG_CACHE_BASE}/api.github.com/repos/aquasecurity/trivy"
+          BASE_URL="${CACHE}/github.com/aquasecurity/trivy"
+          API_URL="${CACHE}/api.github.com/repos/aquasecurity/trivy"
 
-          echo "Using pkg-cache mirror:"
-          echo "${BASE_URL}"
-
+          echo "Trivy source: pkg-cache"
         else
           BASE_URL="https://github.com/aquasecurity/trivy"
-          API_BASE_URL="https://api.github.com/repos/aquasecurity/trivy"
+          API_URL="https://api.github.com/repos/aquasecurity/trivy"
 
-          echo "Using official Trivy releases."
+          echo "Trivy source: GitHub"
         fi
 
-        # ----------------------------------------------------------
-        # Resolve version
-        # ----------------------------------------------------------
         if [[ "${REQUESTED_VERSION}" == "latest" ]]; then
           VERSION="$(
-            curl -fsSL \
-              "${API_BASE_URL}/releases/latest" |
-              grep '"tag_name"' |
-              head -n1 |
-              sed -E 's/.*"v?([^"]+)".*/\1/'
+            curl -fsSL "${API_URL}/releases/latest" |
+            grep '"tag_name"' |
+            head -n1 |
+            sed -E 's/.*"v?([^"]+)".*/\1/'
           )"
 
           if [[ -z "${VERSION}" ]]; then
@@ -233,73 +229,46 @@ runs:
           VERSION="${REQUESTED_VERSION#v}"
         fi
 
-        echo "Trivy version: ${VERSION}"
-        echo "Platform: ${PLATFORM}"
-        echo "Architecture: ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Download
-        # ----------------------------------------------------------
-        TMP_DIR="$(mktemp -d)"
-
-        trap 'rm -rf "${TMP_DIR}"' EXIT
-
         ASSET="trivy_${VERSION}_${PLATFORM}-${ARCH}.tar.gz"
-
         URL="${BASE_URL}/releases/download/v${VERSION}/${ASSET}"
 
-        echo "Downloading:"
-        echo "${URL}"
+        echo "Installing Trivy ${VERSION}..."
+
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "${TMP_DIR}"' EXIT
 
         curl \
           -fsSL \
           --retry 5 \
-          --retry-delay 5 \
+          --retry-delay 2 \
           "${URL}" \
           -o "${TMP_DIR}/${ASSET}"
 
-        # ----------------------------------------------------------
-        # Extract
-        # ----------------------------------------------------------
         tar \
           -xzf "${TMP_DIR}/${ASSET}" \
           -C "${TMP_DIR}" \
           trivy
 
-        # ----------------------------------------------------------
-        # Install
-        # ----------------------------------------------------------
         mkdir -p "${INSTALL_DIR}"
 
         if [[ -w "${INSTALL_DIR}" ]]; then
-          mv \
-            "${TMP_DIR}/trivy" \
-            "${INSTALL_DIR}/trivy"
+          mv "${TMP_DIR}/trivy" "${INSTALL_DIR}/trivy"
         else
-          sudo mv \
-            "${TMP_DIR}/trivy" \
-            "${INSTALL_DIR}/trivy"
+          sudo mv "${TMP_DIR}/trivy" "${INSTALL_DIR}/trivy"
         fi
 
         chmod +x "${INSTALL_DIR}/trivy"
 
-        # ----------------------------------------------------------
-        # PATH
-        # ----------------------------------------------------------
         echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
-
         export PATH="${INSTALL_DIR}:${PATH}"
 
-        # ----------------------------------------------------------
-        # Verify
-        # ----------------------------------------------------------
         INSTALLED_VERSION="$(
-          "${INSTALL_DIR}/trivy" --version |
-            head -n1 |
-            awk '{print $2}'
+          trivy --version |
+          head -n1 |
+          awk '{print $2}'
         )"
 
-        echo "Trivy ${INSTALLED_VERSION} installed."
+        echo "✓ Trivy ${INSTALLED_VERSION} installed."
 
         echo "version=${INSTALLED_VERSION}" >> "${GITHUB_OUTPUT}"
 
@@ -312,38 +281,26 @@ runs:
       env:
         REQUESTED_VERSION: ${{ inputs.gitleaks_version }}
         INSTALL_DIR: ${{ inputs.gitleaks_install_dir }}
+        PKG_CACHE: ${{ inputs.pkg_cache }}
       run: |
         set -euo pipefail
 
-        echo "Installing Gitleaks..."
-
-        # ----------------------------------------------------------
-        # Skip if already installed
-        # ----------------------------------------------------------
         if command -v gitleaks >/dev/null 2>&1; then
           CURRENT_VERSION="$(
             gitleaks version 2>/dev/null |
-              head -n1 |
-              sed -E 's/^v//'
+            head -n1 |
+            sed -E 's/^v//'
           )"
 
           if [[ "${REQUESTED_VERSION}" == "latest" ||
                 "${REQUESTED_VERSION#v}" == "${CURRENT_VERSION#v}" ]]; then
 
-            echo "Gitleaks ${CURRENT_VERSION} is already installed."
-
+            echo "✓ Gitleaks ${CURRENT_VERSION} already installed."
             echo "version=${CURRENT_VERSION}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-
-          echo "Gitleaks ${CURRENT_VERSION} is installed."
-          echo "Requested version: ${REQUESTED_VERSION}"
-          echo "Reinstalling..."
         fi
 
-        # ----------------------------------------------------------
-        # Resolve OS
-        # ----------------------------------------------------------
         OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
         case "${OS}" in
@@ -355,22 +312,16 @@ runs:
             ;;
         esac
 
-        # ----------------------------------------------------------
-        # Resolve architecture
-        # ----------------------------------------------------------
         case "$(uname -m)" in
           x86_64|amd64)
             ARCH="x64"
             ;;
-
           aarch64|arm64)
             ARCH="arm64"
             ;;
-
           armv7l)
             ARCH="armv7"
             ;;
-
           *)
             echo "::error::Unsupported architecture: $(uname -m)"
             exit 1
@@ -378,15 +329,38 @@ runs:
         esac
 
         # ----------------------------------------------------------
+        # Use pkg-cache for Gitleaks as well
+        # ----------------------------------------------------------
+        if [[ -n "${PKG_CACHE}" ]]; then
+          CACHE="${PKG_CACHE}"
+
+          case "${CACHE}" in
+            http://*|https://*) ;;
+            *) CACHE="https://${CACHE}" ;;
+          esac
+
+          CACHE="${CACHE%/}"
+
+          BASE_URL="${CACHE}/github.com/gitleaks/gitleaks"
+          API_URL="${CACHE}/api.github.com/repos/gitleaks/gitleaks"
+
+          echo "Gitleaks source: pkg-cache"
+        else
+          BASE_URL="https://github.com/gitleaks/gitleaks"
+          API_URL="https://api.github.com/repos/gitleaks/gitleaks"
+
+          echo "Gitleaks source: GitHub"
+        fi
+
+        # ----------------------------------------------------------
         # Resolve version
         # ----------------------------------------------------------
         if [[ "${REQUESTED_VERSION}" == "latest" ]]; then
           VERSION="$(
-            curl -fsSL \
-              https://api.github.com/repos/gitleaks/gitleaks/releases/latest |
-              grep '"tag_name"' |
-              head -n1 |
-              sed -E 's/.*"v?([^"]+)".*/\1/'
+            curl -fsSL "${API_URL}/releases/latest" |
+            grep '"tag_name"' |
+            head -n1 |
+            sed -E 's/.*"v?([^"]+)".*/\1/'
           )"
 
           if [[ -z "${VERSION}" ]]; then
@@ -397,359 +371,365 @@ runs:
           VERSION="${REQUESTED_VERSION#v}"
         fi
 
-        echo "Gitleaks version: ${VERSION}"
-        echo "Platform: ${OS}"
-        echo "Architecture: ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Download
-        # ----------------------------------------------------------
-        TMP_DIR="$(mktemp -d)"
-
-        trap 'rm -rf "${TMP_DIR}"' EXIT
-
         ASSET="gitleaks_${VERSION}_${OS}_${ARCH}.tar.gz"
 
-        URL="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${ASSET}"
+        URL="${BASE_URL}/releases/download/v${VERSION}/${ASSET}"
 
-        echo "Downloading:"
-        echo "${URL}"
+        echo "Installing Gitleaks ${VERSION}..."
+
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "${TMP_DIR}"' EXIT
 
         curl \
           -fsSL \
           --retry 5 \
-          --retry-delay 5 \
+          --retry-delay 2 \
           "${URL}" \
           -o "${TMP_DIR}/${ASSET}"
 
-        # ----------------------------------------------------------
-        # Extract
-        # ----------------------------------------------------------
         tar \
           -xzf "${TMP_DIR}/${ASSET}" \
           -C "${TMP_DIR}" \
           gitleaks
 
-        # ----------------------------------------------------------
-        # Install
-        # ----------------------------------------------------------
         mkdir -p "${INSTALL_DIR}"
 
         if [[ -w "${INSTALL_DIR}" ]]; then
-          mv \
-            "${TMP_DIR}/gitleaks" \
-            "${INSTALL_DIR}/gitleaks"
+          mv "${TMP_DIR}/gitleaks" "${INSTALL_DIR}/gitleaks"
         else
-          sudo mv \
-            "${TMP_DIR}/gitleaks" \
-            "${INSTALL_DIR}/gitleaks"
+          sudo mv "${TMP_DIR}/gitleaks" "${INSTALL_DIR}/gitleaks"
         fi
 
         chmod +x "${INSTALL_DIR}/gitleaks"
 
-        # ----------------------------------------------------------
-        # PATH
-        # ----------------------------------------------------------
         echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
-
         export PATH="${INSTALL_DIR}:${PATH}"
 
-        # ----------------------------------------------------------
-        # Verify
-        # ----------------------------------------------------------
         INSTALLED_VERSION="$(
           gitleaks version 2>/dev/null |
-            head -n1 |
-            sed -E 's/^v//'
+          head -n1 |
+          sed -E 's/^v//'
         )"
 
-        echo "Gitleaks ${INSTALLED_VERSION} installed."
+        echo "✓ Gitleaks ${INSTALLED_VERSION} installed."
 
         echo "version=${INSTALLED_VERSION}" >> "${GITHUB_OUTPUT}"
 
     # ============================================================
-    # Secrets scan
+    # Security scan
     # ============================================================
-    - id: secrets-scan
-      name: Secrets scan
-      shell: bash
-      env:
-        SCAN_PATH: ${{ inputs.scan_path }}
-      run: |
-        set -uo pipefail
-
-        REPORT="${RUNNER_TEMP}/gitleaks.json"
-
-        echo "Running Gitleaks secrets scan..."
-        echo "Scan path: ${SCAN_PATH}"
-
-        rm -f "${REPORT}"
-
-        GITLEAKS_EXIT_CODE=0
-
-        gitleaks detect \
-          --source "${SCAN_PATH}" \
-          --no-banner \
-          --report-format json \
-          --report-path "${REPORT}" \
-          || GITLEAKS_EXIT_CODE=$?
-
-        if [[ ! -f "${REPORT}" ]]; then
-          echo "[]" > "${REPORT}"
-        fi
-
-        SECRET_COUNT="$(
-          jq 'length' "${REPORT}" 2>/dev/null || echo 0
-        )"
-
-        echo "Secrets found: ${SECRET_COUNT}"
-
-        echo "count=${SECRET_COUNT}" >> "${GITHUB_OUTPUT}"
-
-        if [[ "${GITLEAKS_EXIT_CODE}" -ne 0 ]]; then
-          echo "::warning::Gitleaks detected ${SECRET_COUNT} potential secret(s)."
-        fi
-
-        # Do not fail here.
-        # The summary step must always execute.
-        exit 0
-
-    # ============================================================
-    # Dependency / vulnerability scan
-    # ============================================================
-    - id: dependency-scan
-      name: Dependency vulnerability scan
+    - id: scan
+      name: Run security scans
       shell: bash
       env:
         SCAN_PATH: ${{ inputs.scan_path }}
         SEVERITY: ${{ inputs.severity }}
+        FAIL_ON: ${{ inputs.fail_on }}
+        VULN_TYPE: ${{ inputs.vuln_type }}
         IGNORE_UNFIXED: ${{ inputs.ignore_unfixed }}
-      run: |
-        set -uo pipefail
-
-        REPORT="${RUNNER_TEMP}/trivy.json"
-
-        echo "Running Trivy dependency vulnerability scan..."
-        echo "Scan path: ${SCAN_PATH}"
-        echo "Severity: ${SEVERITY}"
-
-        rm -f "${REPORT}"
-
-        TRIVY_ARGS=(
-          fs
-          --scanners vuln
-          --severity "${SEVERITY}"
-          --format json
-          --output "${REPORT}"
-        )
-
-        if [[ "${IGNORE_UNFIXED}" == "true" ]]; then
-          TRIVY_ARGS+=(--ignore-unfixed)
-        fi
-
-        TRIVY_EXIT_CODE=0
-
-        trivy \
-          "${TRIVY_ARGS[@]}" \
-          "${SCAN_PATH}" \
-          || TRIVY_EXIT_CODE=$?
-
-        if [[ ! -f "${REPORT}" ]]; then
-          echo '{"Results":[]}' > "${REPORT}"
-        fi
-
-        VULNERABILITY_COUNT="$(
-          jq '
-            [
-              .Results[]?.Vulnerabilities[]?
-            ] | length
-          ' "${REPORT}" 2>/dev/null || echo 0
-        )"
-
-        echo "Vulnerabilities found: ${VULNERABILITY_COUNT}"
-
-        echo "count=${VULNERABILITY_COUNT}" >> "${GITHUB_OUTPUT}"
-
-        if [[ "${TRIVY_EXIT_CODE}" -ne 0 ]]; then
-          echo "::warning::Trivy detected ${VULNERABILITY_COUNT} vulnerability/vulnerabilities."
-        fi
-
-        # Do not fail here.
-        # The summary step must always execute.
-        exit 0
-
-    # ============================================================
-    # Security summary
-    # ============================================================
-    - id: security-summary
-      name: Security scan summary
-      if: always()
-      shell: bash
-      env:
-        SCAN_PATH: ${{ inputs.scan_path }}
         FAIL_ON_SECRETS: ${{ inputs.fail_on_secrets }}
-        FAIL_ON_VULNERABILITIES: ${{ inputs.fail_on_vulnerabilities }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
       run: |
         set -uo pipefail
 
         GITLEAKS_REPORT="${RUNNER_TEMP}/gitleaks.json"
         TRIVY_REPORT="${RUNNER_TEMP}/trivy.json"
 
-        SUMMARY="${RUNNER_TEMP}/security-summary.md"
+        mkdir -p "${OUTPUT_DIR}"
 
-        SECRET_COUNT=0
-        VULNERABILITY_COUNT=0
+        JSON_REPORT="${OUTPUT_DIR}/trivy-results.json"
+        TABLE_REPORT="${OUTPUT_DIR}/trivy-results.txt"
 
         # ----------------------------------------------------------
-        # Read secret count
+        # Validate scan path
         # ----------------------------------------------------------
-        if [[ -f "${GITLEAKS_REPORT}" ]]; then
-          SECRET_COUNT="$(
-            jq 'length' "${GITLEAKS_REPORT}" 2>/dev/null || echo 0
-          )"
+        if [[ ! -e "${SCAN_PATH}" ]]; then
+          echo "::error::Scan path does not exist: ${SCAN_PATH}"
+          exit 1
         fi
 
         # ----------------------------------------------------------
-        # Read vulnerability count
+        # Validate fail_on
         # ----------------------------------------------------------
-        if [[ -f "${TRIVY_REPORT}" ]]; then
-          VULNERABILITY_COUNT="$(
-            jq '
-              [
-                .Results[]?.Vulnerabilities[]?
-              ] | length
-            ' "${TRIVY_REPORT}" 2>/dev/null || echo 0
+        IFS=',' read -ra REPORT_SEVERITIES <<< "${SEVERITY}"
+
+        if [[ -n "${FAIL_ON}" ]]; then
+          IFS=',' read -ra FAIL_SEVERITIES <<< "${FAIL_ON}"
+
+          for FAIL_SEVERITY in "${FAIL_SEVERITIES[@]}"; do
+            FAIL_SEVERITY="$(echo "${FAIL_SEVERITY}" | xargs)"
+
+            FOUND=false
+
+            for REPORT_SEVERITY in "${REPORT_SEVERITIES[@]}"; do
+              REPORT_SEVERITY="$(echo "${REPORT_SEVERITY}" | xargs)"
+
+              if [[ "${FAIL_SEVERITY}" == "${REPORT_SEVERITY}" ]]; then
+                FOUND=true
+                break
+              fi
+            done
+
+            if [[ "${FOUND}" == "false" ]]; then
+              echo "::error::fail_on severity '${FAIL_SEVERITY}' is not included in severity '${SEVERITY}'."
+              exit 1
+            fi
+          done
+        fi
+
+        # ==========================================================
+        # Header
+        # ==========================================================
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║                    SECURITY SCAN                         ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "  Path       : ${SCAN_PATH}"
+        echo "  Severity   : ${SEVERITY}"
+        echo "  Fail on    : ${FAIL_ON:-none}"
+        echo "  Vuln types : ${VULN_TYPE}"
+        echo "  Unfixed    : ${IGNORE_UNFIXED}"
+        echo ""
+
+        # ==========================================================
+        # Gitleaks
+        # ==========================================================
+        echo "┌────────────────────────────────────────────────────────────┐"
+        echo "│ Secrets                                                     │"
+        echo "└────────────────────────────────────────────────────────────┘"
+
+        rm -f "${GITLEAKS_REPORT}"
+
+        GITLEAKS_EXIT=0
+
+        gitleaks detect \
+          --source "${SCAN_PATH}" \
+          --no-banner \
+          --report-format json \
+          --report-path "${GITLEAKS_REPORT}" \
+          >/dev/null 2>&1 \
+          || GITLEAKS_EXIT=$?
+
+        if [[ ! -f "${GITLEAKS_REPORT}" ]]; then
+          echo "[]" > "${GITLEAKS_REPORT}"
+        fi
+
+        SECRET_COUNT="$(
+          jq 'length' "${GITLEAKS_REPORT}" 2>/dev/null || echo 0
+        )"
+
+        if [[ "${SECRET_COUNT}" -eq 0 ]]; then
+          echo "  ✓ No secrets detected"
+        else
+          echo "  ✗ ${SECRET_COUNT} secret(s) detected"
+        fi
+
+        # ==========================================================
+        # Trivy
+        # ==========================================================
+        echo ""
+        echo "┌────────────────────────────────────────────────────────────┐"
+        echo "│ Dependencies                                                │"
+        echo "└────────────────────────────────────────────────────────────┘"
+
+        rm -f "${TRIVY_REPORT}"
+
+        IGNORE_UNFIXED_FLAG=()
+
+        if [[ "${IGNORE_UNFIXED}" == "true" ]]; then
+          IGNORE_UNFIXED_FLAG=(--ignore-unfixed)
+        fi
+
+        echo "  Updating vulnerability database..."
+
+        trivy image \
+          --download-db-only \
+          --quiet \
+          >/dev/null 2>&1
+
+        TRIVY_EXIT=0
+
+        trivy fs \
+          --scanners vuln \
+          --severity "${SEVERITY}" \
+          --vuln-type "${VULN_TYPE}" \
+          "${IGNORE_UNFIXED_FLAG[@]}" \
+          --format json \
+          --output "${TRIVY_REPORT}" \
+          --skip-db-update \
+          --exit-code 0 \
+          "${SCAN_PATH}" \
+          >/dev/null 2>&1 \
+          || TRIVY_EXIT=$?
+
+        if [[ ! -f "${TRIVY_REPORT}" ]]; then
+          echo '{"Results":[]}' > "${TRIVY_REPORT}"
+        fi
+
+        cp "${TRIVY_REPORT}" "${JSON_REPORT}"
+
+        # ----------------------------------------------------------
+        # Human-readable report
+        # ----------------------------------------------------------
+        trivy fs \
+          --scanners vuln \
+          --severity "${SEVERITY}" \
+          --vuln-type "${VULN_TYPE}" \
+          "${IGNORE_UNFIXED_FLAG[@]}" \
+          --format table \
+          --output "${TABLE_REPORT}" \
+          --skip-db-update \
+          --exit-code 0 \
+          "${SCAN_PATH}" \
+          >/dev/null 2>&1 \
+          || true
+
+        TOTAL_VULNS="$(
+          jq '
+            [
+              .Results[]?.Vulnerabilities[]?
+            ] | length
+          ' "${TRIVY_REPORT}" 2>/dev/null || echo 0
+        )"
+
+        if [[ -z "${FAIL_ON}" ]]; then
+          VULN_COUNT=0
+        else
+          VULN_COUNT="$(
+            jq \
+              --arg sevs "${FAIL_ON}" \
+              '
+                ($sevs
+                  | split(",")
+                  | map(gsub("^\\s+|\\s+$"; ""))
+                ) as $fail_sevs
+
+                |
+
+                [
+                  .Results[]?.Vulnerabilities[]?
+                  |
+                  select(
+                    .Severity as $severity
+                    |
+                    $fail_sevs | index($severity)
+                  )
+                ]
+
+                | length
+              ' "${TRIVY_REPORT}" 2>/dev/null || echo 0
           )"
         fi
 
-        TOTAL_COUNT=$((SECRET_COUNT + VULNERABILITY_COUNT))
+        # ==========================================================
+        # Final result
+        # ==========================================================
+        if [[ "${TOTAL_VULNS}" -eq 0 ]]; then
+          echo "  ✓ No vulnerabilities detected"
+        else
+          echo "  ✗ ${TOTAL_VULNS} vulnerability/vulnerabilities detected"
+        fi
 
         # ----------------------------------------------------------
-        # Create summary
+        # Outputs
         # ----------------------------------------------------------
+        echo "json_report=${JSON_REPORT}" >> "${GITHUB_OUTPUT}"
+        echo "table_report=${TABLE_REPORT}" >> "${GITHUB_OUTPUT}"
+        echo "secret_count=${SECRET_COUNT}" >> "${GITHUB_OUTPUT}"
+        echo "vulnerability_count=${VULN_COUNT}" >> "${GITHUB_OUTPUT}"
+
+        # ==========================================================
+        # GitHub Actions summary
+        # ==========================================================
         {
-          echo "## 🔐 Security Scan Summary"
+          echo "## 🔐 Security Scan"
           echo ""
-          echo "**Scan path:** \`${SCAN_PATH}\`"
+          echo "| Setting | Value |"
+          echo "|---|---|"
+          echo "| Path | \`${SCAN_PATH}\` |"
+          echo "| Severity | \`${SEVERITY}\` |"
+          echo "| Fail on | \`${FAIL_ON:-none}\` |"
+          echo "| Vulnerability types | \`${VULN_TYPE}\` |"
+          echo "| Ignore unfixed | \`${IGNORE_UNFIXED}\` |"
           echo ""
-          echo "| Scanner | Severity | Issue | Location | Package | Installed | Fixed |"
-          echo "|---|---|---|---|---|---|---|"
-        } > "${SUMMARY}"
+          echo "### Results"
+          echo ""
+          echo "| Scanner | Result | Count |"
+          echo "|---|---|---:|"
+          echo "| Gitleaks | $([[ "${SECRET_COUNT}" -eq 0 ]] && echo "✅ Passed" || echo "❌ Failed") | ${SECRET_COUNT} |"
+          echo "| Trivy | $([[ "${VULN_COUNT}" -eq 0 ]] && echo "✅ Passed" || echo "❌ Failed") | ${VULN_COUNT} |"
+          echo ""
+          echo "### Vulnerabilities"
+          echo ""
+          echo "| Severity | Vulnerability | Package | Installed | Fixed | Target |"
+          echo "|---|---|---|---|---|---|"
+        } >> "${GITHUB_STEP_SUMMARY}"
 
-        # ----------------------------------------------------------
-        # Add Gitleaks findings
-        #
-        # IMPORTANT:
-        # We intentionally do NOT include Secret in the output.
-        # This prevents credentials from appearing in the Actions
-        # summary.
-        # ----------------------------------------------------------
-        if [[ "${SECRET_COUNT}" -gt 0 ]]; then
-
+        if [[ "${TOTAL_VULNS}" -gt 0 ]]; then
           jq -r '
-            .[] |
+            .Results[]? as $result
+            |
+            $result.Vulnerabilities[]?
+            |
             [
-              "| Gitleaks",
-              "HIGH",
-              ("Secret detected: " + (.RuleID // "unknown")),
-              ((.File // "unknown") + ":" + ((.StartLine // 0) | tostring)),
-              "—",
-              "—",
-              "— |"
-            ] |
-            join(" | ")
-          ' "${GITLEAKS_REPORT}" >> "${SUMMARY}"
-
-        fi
-
-        # ----------------------------------------------------------
-        # Add Trivy findings
-        # ----------------------------------------------------------
-        if [[ "${VULNERABILITY_COUNT}" -gt 0 ]]; then
-
-          jq -r '
-            .Results[]? |
-            .Target as $target |
-            .Vulnerabilities[]? |
-            [
-              "| Trivy",
               (.Severity // "UNKNOWN"),
-              (
-                (.VulnerabilityID // "UNKNOWN") +
-                ": " +
-                (.Title // "Vulnerability")
-              ),
-              ($target // "unknown"),
+              (.VulnerabilityID // "UNKNOWN"),
               (.PkgName // "unknown"),
               (.InstalledVersion // "unknown"),
-              (.FixedVersion // "—") + " |"
-            ] |
-            join(" | ")
-          ' "${TRIVY_REPORT}" >> "${SUMMARY}"
-
+              (.FixedVersion // "—"),
+              ($result.Target // "unknown")
+            ]
+            |
+            "| " + join(" | ") + " |"
+          ' "${TRIVY_REPORT}" >> "${GITHUB_STEP_SUMMARY}"
+        else
+          echo "| — | No vulnerabilities found | — | — | — | — |" \
+            >> "${GITHUB_STEP_SUMMARY}"
         fi
 
-        # ----------------------------------------------------------
-        # No findings
-        # ----------------------------------------------------------
-        if [[ "${TOTAL_COUNT}" -eq 0 ]]; then
-          echo "| — | — | No security issues detected | — | — | — | — |" >> "${SUMMARY}"
-        fi
-
-        # ----------------------------------------------------------
-        # Summary statistics
-        # ----------------------------------------------------------
         {
           echo ""
-          echo "### Summary"
+          echo "### Reports"
           echo ""
-          echo "| Metric | Count |"
-          echo "|---|---:|"
-          echo "| Secrets | ${SECRET_COUNT} |"
-          echo "| Vulnerabilities | ${VULNERABILITY_COUNT} |"
-          echo "| **Total issues** | **${TOTAL_COUNT}** |"
-        } >> "${SUMMARY}"
+          echo "- JSON: \`${JSON_REPORT}\`"
+          echo "- Table: \`${TABLE_REPORT}\`"
+        } >> "${GITHUB_STEP_SUMMARY}"
 
-        # ----------------------------------------------------------
-        # Write to GitHub Actions summary
-        # ----------------------------------------------------------
-        cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
-
-        # ----------------------------------------------------------
-        # Also print to logs
-        # ----------------------------------------------------------
-        echo ""
-        echo "============================================================"
-        echo "Security Scan Summary"
-        echo "============================================================"
-
-        cat "${SUMMARY}"
-
-        echo ""
-        echo "============================================================"
-
-        # ----------------------------------------------------------
-        # Fail after the report has been generated
-        # ----------------------------------------------------------
+        # ==========================================================
+        # Fail the action after producing the complete summary
+        # ==========================================================
         FAILED=0
 
         if [[ "${FAIL_ON_SECRETS}" == "true" &&
               "${SECRET_COUNT}" -gt 0 ]]; then
-
-          echo "::error::Secrets scan failed: ${SECRET_COUNT} secret(s) detected."
+          echo "::error::Gitleaks detected ${SECRET_COUNT} secret(s)."
           FAILED=1
         fi
 
-        if [[ "${FAIL_ON_VULNERABILITIES}" == "true" &&
-              "${VULNERABILITY_COUNT}" -gt 0 ]]; then
-
-          echo "::error::Dependency scan failed: ${VULNERABILITY_COUNT} vulnerability/vulnerabilities detected."
+        if [[ -n "${FAIL_ON}" &&
+              "${VULN_COUNT}" -gt 0 ]]; then
+          echo "::error::Trivy found ${VULN_COUNT} vulnerability/vulnerabilities matching: ${FAIL_ON}"
           FAILED=1
         fi
 
-        if [[ "${FAILED}" -ne 0 ]]; then
-          echo "::error::Security scan failed."
-          exit 1
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║                    SCAN SUMMARY                          ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        echo ""
+        printf '  %-20s %s\n' "Secrets:" "${SECRET_COUNT}"
+        printf '  %-20s %s\n' "Vulnerabilities:" "${TOTAL_VULNS}"
+        printf '  %-20s %s\n' "Failing issues:" "$((SECRET_COUNT + VULN_COUNT))"
+        echo ""
+
+        if [[ "${FAILED}" -eq 0 ]]; then
+          echo "  ✓ SECURITY SCAN PASSED"
+          echo ""
+          exit 0
         fi
 
-        echo "Security scan passed."
+        echo "  ✗ SECURITY SCAN FAILED"
+        echo ""
+
+        exit 1
