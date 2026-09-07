@@ -1,5 +1,5 @@
-name: Docker Build
-description: Build Docker image
+name: Docker Platform Check
+description: Validate Docker image platforms
 
 inputs:
   build_args:
@@ -12,79 +12,34 @@ inputs:
     required: false
     default: linux/amd64,linux/arm64,linux/arm/v7
 
-  on_unsupported_platform:
-    description: What to do when a platform cannot be built. Allowed values are skip or error.
-    required: false
-    default: skip
-
 outputs:
   supported_platforms:
     description: Comma-separated list of platforms that can be built
     value: ${{ steps.build.outputs.supported_platforms }}
-
-  builder_name:
-    description: Name of the Buildx builder created for this run. Pass to the push action to reuse it.
-    value: ${{ steps.build.outputs.builder_name }}
 
 runs:
   using: composite
 
   steps:
     - id: build
+      name: Validate Docker platforms
       shell: bash
+      env:
+        REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+        BUILD_ARGS: ${{ inputs.build_args }}
       run: |
         set -euo pipefail
 
         # ------------------------------------------------------------
-        # Install dependencies
+        # Validate configuration
         # ------------------------------------------------------------
-        echo "Installing dependencies..."
-
-        if ! command -v jq >/dev/null 2>&1; then
-          if command -v apk >/dev/null 2>&1; then
-            apk add --no-cache jq
-
-          elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq jq
-
-          elif command -v pacman >/dev/null 2>&1; then
-            pacman -Sy --noconfirm jq
-
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y jq
-
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y jq
-
-          else
-            echo "::error::Unable to install dependencies. No supported package manager found."
-            exit 1
-          fi
-        fi
-
-        # ------------------------------------------------------------
-        # Configuration
-        # ------------------------------------------------------------
-        REQUESTED_PLATFORMS="${{ inputs.platforms }}"
-        ON_UNSUPPORTED_PLATFORM="${{ inputs.on_unsupported_platform }}"
-
-        # ------------------------------------------------------------
-        # Validate inputs
-        # ------------------------------------------------------------
-        if [[ "${ON_UNSUPPORTED_PLATFORM}" != "skip" &&
-              "${ON_UNSUPPORTED_PLATFORM}" != "error" ]]; then
-          echo "::error::Invalid on_unsupported_platform '${ON_UNSUPPORTED_PLATFORM}'. Expected 'skip' or 'error'."
+        if [[ -z "${REQUESTED_PLATFORMS}" ]]; then
+          echo "::error::platforms input is empty. Nothing to build."
           exit 1
         fi
 
         # ------------------------------------------------------------
         # Generate a unique builder name.
-        #
-        # Using a fixed name (e.g. "docker-build") breaks when multiple
-        # workflow runs build concurrently on the same runner, since
-        # they'd all fight over one builder. A random suffix per run
-        # avoids that.
         # ------------------------------------------------------------
         if command -v uuidgen >/dev/null 2>&1; then
           UUID="$(uuidgen)"
@@ -96,7 +51,13 @@ runs:
 
         BUILDER_NAME="build_${UUID}"
 
-        echo "Builder name: ${BUILDER_NAME}"
+        echo "============================================================"
+        echo "Docker Buildx"
+        echo "============================================================"
+        echo "Builder   : ${BUILDER_NAME}"
+        echo "Platforms : ${REQUESTED_PLATFORMS}"
+        echo "============================================================"
+        echo ""
 
         # ------------------------------------------------------------
         # Create Buildx builder
@@ -105,59 +66,53 @@ runs:
           --name "${BUILDER_NAME}" \
           --use \
           --driver docker-container \
-          >/dev/null 2>&1
+          >/dev/null
 
         # ------------------------------------------------------------
-        # Cleanup Buildx builder on error only.
+        # Cleanup builder on unexpected failure.
         #
-        # On success the builder is left in place so a downstream
-        # push action can reuse it (and its build cache) instead of
-        # rebuilding every layer from scratch.
-        #
-        # trap ... ERR catches unexpected command failures (anything
-        # that trips `set -e`). It does NOT fire on an explicit `exit`,
-        # so intentional error exits below call cleanup themselves
-        # before exiting.
+        # On success the builder is also removed because this action
+        # does not expose the builder for downstream reuse.
         # ------------------------------------------------------------
         cleanup() {
+          local exit_code=$?
+
           echo ""
           echo "============================================================"
-          echo "Cleaning up Buildx builder (error)"
+          echo "Cleaning up Buildx builder"
           echo "============================================================"
 
-          docker buildx rm --force "${BUILDER_NAME}" >/dev/null 2>&1 || true
+          docker buildx rm \
+            --force \
+            "${BUILDER_NAME}" \
+            >/dev/null 2>&1 || true
 
           echo "Buildx cleanup completed."
+
+          exit "${exit_code}"
         }
 
-        trap cleanup ERR
+        trap cleanup EXIT
 
         # ------------------------------------------------------------
         # Parse requested platforms
         # ------------------------------------------------------------
-        IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
+        IFS=',' read -ra PLATFORMS <<< "${REQUESTED_PLATFORMS}"
 
-        supported_platforms=""
+        SUPPORTED_PLATFORMS=""
 
-        echo ""
         echo "Requested platforms: ${REQUESTED_PLATFORMS}"
-        echo "On unsupported platform: ${ON_UNSUPPORTED_PLATFORM}"
         echo ""
 
         # ------------------------------------------------------------
         # Validate each platform by actually solving the Dockerfile.
         #
-        # IMPORTANT:
-        #   type=cacheonly means NOTHING is pushed.
+        # Build arguments are passed to the Dockerfile so validation
+        # reflects the real build requirements.
         #
-        # This catches failures such as:
-        #   - unavailable packages
-        #   - unsupported binaries
-        #   - failed RUN commands
-        #   - architecture-specific compilation errors
-        #   - unsupported base images
+        # type=cacheonly means nothing is exported or pushed.
         # ------------------------------------------------------------
-        for platform in "${platforms[@]}"; do
+        for platform in "${PLATFORMS[@]}"; do
           platform="$(echo "${platform}" | xargs)"
 
           [[ -z "${platform}" ]] && continue
@@ -166,29 +121,31 @@ runs:
           echo "Checking platform: ${platform}"
           echo "============================================================"
 
-          if docker buildx build \
-              --builder "${BUILDER_NAME}" \
-              --platform "${platform}" \
-              ${{ inputs.build_args }} \
-              --output type=cacheonly \
-              .; then
+          BUILD_COMMAND=(
+            docker buildx build
+            --builder "${BUILDER_NAME}"
+            --platform "${platform}"
+            --output type=cacheonly
+          )
 
+          if [[ -n "${BUILD_ARGS}" ]]; then
+            # shellcheck disable=SC2206
+            EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
+            BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
+          fi
+
+          BUILD_COMMAND+=( "." )
+
+          if "${BUILD_COMMAND[@]}"; then
             echo "✓ ${platform} image can be built"
 
-            if [[ -z "${supported_platforms}" ]]; then
-              supported_platforms="${platform}"
+            if [[ -z "${SUPPORTED_PLATFORMS}" ]]; then
+              SUPPORTED_PLATFORMS="${platform}"
             else
-              supported_platforms="${supported_platforms},${platform}"
+              SUPPORTED_PLATFORMS="${SUPPORTED_PLATFORMS},${platform}"
             fi
-
           else
-            if [[ "${ON_UNSUPPORTED_PLATFORM}" == "skip" ]]; then
-              echo "::warning::${platform} image cannot be built, skipping platform"
-            else
-              echo "::error::${platform} image cannot be built"
-              cleanup
-              exit 1
-            fi
+            echo "::warning::${platform} image cannot be built, skipping platform"
           fi
 
           echo ""
@@ -197,16 +154,23 @@ runs:
         # ------------------------------------------------------------
         # Make sure at least one platform succeeded
         # ------------------------------------------------------------
-        if [[ -z "${supported_platforms}" ]]; then
+        if [[ -z "${SUPPORTED_PLATFORMS}" ]]; then
           echo "::error::None of the requested platforms can be built."
-          cleanup
           exit 1
         fi
 
+        # ------------------------------------------------------------
+        # Results
+        # ------------------------------------------------------------
         echo "============================================================"
-        echo "Supported platforms: ${supported_platforms}"
-        echo "Builder: ${BUILDER_NAME}"
+        echo "Docker platform validation complete"
+        echo "============================================================"
+        echo "Requested platforms : ${REQUESTED_PLATFORMS}"
+        echo "Supported platforms : ${SUPPORTED_PLATFORMS}"
         echo "============================================================"
         echo ""
-        echo "supported_platforms=${supported_platforms}" >> "${GITHUB_OUTPUT}"
-        echo "builder_name=${BUILDER_NAME}" >> "${GITHUB_OUTPUT}"
+
+        # ------------------------------------------------------------
+        # Output
+        # ------------------------------------------------------------
+        echo "supported_platforms=${SUPPORTED_PLATFORMS}" >> "${GITHUB_OUTPUT}"
