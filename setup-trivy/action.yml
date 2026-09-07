@@ -1,0 +1,205 @@
+name: Install Trivy
+description: Install the Trivy CLI on the runner
+
+inputs:
+  version:
+    description: Trivy version to install (e.g. "0.55.2"). Defaults to the latest release.
+    required: false
+    default: latest
+
+  install_dir:
+    description: Directory to install the trivy binary into. Must be on PATH, or added to PATH by this action.
+    required: false
+    default: /usr/local/bin
+
+  pkg_cache:
+    description: Package cache host or base URL to mirror GitHub releases through (e.g. an internal proxy). Falls back to github.com when empty.
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: The Trivy version that was installed
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+
+  steps:
+    - id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # ------------------------------------------------------------
+        # Install dependencies
+        # ------------------------------------------------------------
+        echo "Installing dependencies..."
+
+        for dep in curl tar; do
+          if ! command -v "${dep}" >/dev/null 2>&1; then
+            if command -v apk >/dev/null 2>&1; then
+              apk add --no-cache "${dep}"
+
+            elif command -v apt-get >/dev/null 2>&1; then
+              apt-get update -qq
+              apt-get install -y -qq "${dep}"
+
+            elif command -v pacman >/dev/null 2>&1; then
+              pacman -Sy --noconfirm "${dep}"
+
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y "${dep}"
+
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y "${dep}"
+
+            else
+              echo "::error::Unable to install dependencies. No supported package manager found."
+              exit 1
+            fi
+          fi
+        done
+
+        # ------------------------------------------------------------
+        # Configuration
+        # ------------------------------------------------------------
+        REQUESTED_VERSION="${{ inputs.version }}"
+        INSTALL_DIR="${{ inputs.install_dir }}"
+        PKG_CACHE="${{ inputs.pkg_cache }}"
+
+        # ------------------------------------------------------------
+        # Skip install if the requested version is already present
+        # ------------------------------------------------------------
+        if command -v trivy >/dev/null 2>&1; then
+          CURRENT_VERSION="$(trivy --version | head -n1 | awk '{print $2}')"
+
+          if [[ "${REQUESTED_VERSION}" == "latest" || "${REQUESTED_VERSION}" == "${CURRENT_VERSION}" ]]; then
+            echo "Trivy ${CURRENT_VERSION} is already installed, skipping install."
+            echo "version=${CURRENT_VERSION}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "Trivy ${CURRENT_VERSION} is installed but ${REQUESTED_VERSION} was requested; reinstalling."
+        fi
+
+        # ------------------------------------------------------------
+        # Resolve OS / architecture
+        # ------------------------------------------------------------
+        OS="$(uname -s)"
+
+        case "$(uname -m)" in
+          x86_64|amd64)
+            ARCH="64bit"
+            ;;
+          aarch64|arm64)
+            ARCH="ARM64"
+            ;;
+          armv7l|armv6l)
+            ARCH="ARM"
+            ;;
+          *)
+            echo "::error::Unsupported architecture: $(uname -m)"
+            exit 1
+            ;;
+        esac
+
+        case "${OS}" in
+          Linux)
+            PLATFORM="Linux"
+            ;;
+          Darwin)
+            PLATFORM="macOS"
+            ;;
+          *)
+            echo "::error::Unsupported OS: ${OS}"
+            exit 1
+            ;;
+        esac
+
+        # ------------------------------------------------------------
+        # Resolve base URL (official GitHub or pkg-cache mirror)
+        # ------------------------------------------------------------
+        if [[ -n "${PKG_CACHE}" ]]; then
+          PKG_CACHE_BASE="${PKG_CACHE}"
+          case "${PKG_CACHE_BASE}" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://${PKG_CACHE_BASE}" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          BASE_URL="${PKG_CACHE_BASE}/github.com/aquasecurity/trivy"
+          API_BASE_URL="${PKG_CACHE_BASE}/api.github.com/repos/aquasecurity/trivy"
+          echo "Using pkg-cache mirror: ${BASE_URL}"
+        else
+          BASE_URL="https://github.com/aquasecurity/trivy"
+          API_BASE_URL="https://api.github.com/repos/aquasecurity/trivy"
+          echo "Using official Trivy releases"
+        fi
+
+        # ------------------------------------------------------------
+        # Resolve version to install
+        # ------------------------------------------------------------
+        if [[ "${REQUESTED_VERSION}" == "latest" ]]; then
+          VERSION="$(curl -fsSL "${API_BASE_URL}/releases/latest" \
+            | grep '"tag_name"' \
+            | head -n1 \
+            | sed -E 's/.*"v?([^"]+)".*/\1/')"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "::error::Unable to resolve latest Trivy version"
+            exit 1
+          fi
+        else
+          VERSION="${REQUESTED_VERSION#v}"
+        fi
+
+        echo "Installing Trivy ${VERSION} (${PLATFORM}-${ARCH})..."
+
+        # ------------------------------------------------------------
+        # Download and install
+        # ------------------------------------------------------------
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+
+        ASSET="trivy_${VERSION}_${PLATFORM}-${ARCH}.tar.gz"
+        URL="${BASE_URL}/releases/download/v${VERSION}/${ASSET}"
+
+        echo "Downloading ${URL}"
+
+        if ! curl -fsSL --retry 5 --retry-delay 5 "${URL}" -o "${TMP_DIR}/${ASSET}"; then
+          echo "::error::Failed to download Trivy ${VERSION} for ${PLATFORM}-${ARCH}. Check that the version exists: https://github.com/aquasecurity/trivy/releases"
+          exit 1
+        fi
+
+        tar -xzf "${TMP_DIR}/${ASSET}" -C "${TMP_DIR}" trivy
+
+        if [[ ! -w "${INSTALL_DIR}" ]]; then
+          mkdir -p "${INSTALL_DIR}" 2>/dev/null || true
+        fi
+
+        if [[ -w "${INSTALL_DIR}" ]]; then
+          mv "${TMP_DIR}/trivy" "${INSTALL_DIR}/trivy"
+        else
+          sudo mv "${TMP_DIR}/trivy" "${INSTALL_DIR}/trivy"
+        fi
+
+        chmod +x "${INSTALL_DIR}/trivy"
+
+        # ------------------------------------------------------------
+        # Make sure install_dir is on PATH for subsequent steps
+        # ------------------------------------------------------------
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+          echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
+        fi
+
+        export PATH="${INSTALL_DIR}:${PATH}"
+
+        # ------------------------------------------------------------
+        # Verify install
+        # ------------------------------------------------------------
+        INSTALLED_VERSION="$("${INSTALL_DIR}/trivy" --version | head -n1 | awk '{print $2}')"
+
+        echo "✓ Trivy ${INSTALLED_VERSION} installed at ${INSTALL_DIR}/trivy"
+
+        echo "version=${INSTALLED_VERSION}" >> "${GITHUB_OUTPUT}"

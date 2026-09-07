@@ -1,5 +1,5 @@
-name: Docker Build
-description: Build Docker image
+name: Docker Push
+description: Build and push a Docker image for a given set of platforms
 
 inputs:
   registry:
@@ -25,14 +25,13 @@ inputs:
     default: ""
 
   platforms:
-    description: Comma-separated list of target platforms
-    required: false
-    default: linux/amd64,linux/arm64,linux/arm/v7
+    description: Comma-separated list of platforms to build and push (e.g. output of the platform-check action)
+    required: true
 
-  on_unsupported_platform:
-    description: What to do when a platform cannot be built. Allowed values are skip or error.
+  builder_name:
+    description: Name of an existing Buildx builder to reuse (e.g. output of the platform-check action). If omitted, a new random builder is created and removed after the build.
     required: false
-    default: skip
+    default: ""
 
 runs:
   using: composite
@@ -41,34 +40,6 @@ runs:
     - shell: bash
       run: |
         set -euo pipefail
-
-        # ------------------------------------------------------------
-        # Install dependencies
-        # ------------------------------------------------------------
-        echo "Installing dependencies..."
-
-        if ! command -v jq >/dev/null 2>&1; then
-          if command -v apk >/dev/null 2>&1; then
-            apk add --no-cache jq
-
-          elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq jq
-
-          elif command -v pacman >/dev/null 2>&1; then
-            pacman -Sy --noconfirm jq
-
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y jq
-
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y jq
-
-          else
-            echo "::error::Unable to install dependencies. No supported package manager found."
-            exit 1
-          fi
-        fi
 
         # ------------------------------------------------------------
         # Configuration
@@ -81,8 +52,8 @@ runs:
         IMAGE_NAME="${{ inputs.image }}"
         TAG="${{ inputs.tag }}"
 
-        REQUESTED_PLATFORMS="${{ inputs.platforms }}"
-        ON_UNSUPPORTED_PLATFORM="${{ inputs.on_unsupported_platform }}"
+        PLATFORMS="${{ inputs.platforms }}"
+        BUILDER_NAME="${{ inputs.builder_name }}"
 
         # ------------------------------------------------------------
         # Validate inputs
@@ -102,129 +73,82 @@ runs:
           exit 1
         fi
 
-        if [[ "${ON_UNSUPPORTED_PLATFORM}" != "skip" &&
-              "${ON_UNSUPPORTED_PLATFORM}" != "error" ]]; then
-          echo "::error::Invalid on_unsupported_platform '${ON_UNSUPPORTED_PLATFORM}'. Expected 'skip' or 'error'."
+        if [[ -z "${PLATFORMS}" ]]; then
+          echo "::error::platforms input is empty. Nothing to build."
           exit 1
         fi
 
         IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
 
         # ------------------------------------------------------------
-        # Create Buildx builder
+        # Buildx builder
         # ------------------------------------------------------------
-        docker buildx create \
-          --name docker-build \
-          --use \
-          --driver docker-container \
-          >/dev/null 2>&1 || docker buildx use docker-build
-
-        # ------------------------------------------------------------
-        # Cleanup Buildx builder when this step exits.
+        # If builder_name was passed in (e.g. from the platform-check
+        # action), reuse it so build cache from that step carries
+        # over, and leave its lifecycle to whoever created it — do
+        # NOT remove it here.
         #
-        # This runs on:
-        #   - successful build
-        #   - failed build
-        #   - unsupported platform with error
-        #   - any other exit from this shell
+        # If no builder_name was given (standalone run), generate a
+        # random one so concurrent runs on the same runner never
+        # collide, and clean it up unconditionally since this action
+        # is the sole owner of it.
         # ------------------------------------------------------------
+        OWNS_BUILDER=false
+
+        if [[ -z "${BUILDER_NAME}" ]]; then
+          if command -v uuidgen >/dev/null 2>&1; then
+            UUID="$(uuidgen)"
+          elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+            UUID="$(cat /proc/sys/kernel/random/uuid)"
+          else
+            UUID="$(date +%s%N)-${RANDOM}"
+          fi
+
+          BUILDER_NAME="build_${UUID}"
+          OWNS_BUILDER=true
+
+          docker buildx create \
+            --name "${BUILDER_NAME}" \
+            --use \
+            --driver docker-container \
+            >/dev/null 2>&1
+        else
+          docker buildx use "${BUILDER_NAME}"
+        fi
+
+        echo "Builder name: ${BUILDER_NAME}"
+
         cleanup() {
-          echo ""
-          echo "============================================================"
-          echo "Cleaning up Buildx builder"
-          echo "============================================================"
+          if [[ "${OWNS_BUILDER}" == "true" ]]; then
+            echo ""
+            echo "============================================================"
+            echo "Cleaning up Buildx builder"
+            echo "============================================================"
 
-          docker buildx rm --force docker-build >/dev/null 2>&1 || true
+            docker buildx rm --force "${BUILDER_NAME}" >/dev/null 2>&1 || true
 
-          echo "Buildx cleanup completed."
+            echo "Buildx cleanup completed."
+          fi
         }
 
         trap cleanup EXIT
 
-        # ------------------------------------------------------------
-        # Parse requested platforms
-        # ------------------------------------------------------------
-        IFS=',' read -ra platforms <<< "${REQUESTED_PLATFORMS}"
-
-        supported_platforms=""
-
-        echo ""
-        echo "Requested platforms: ${REQUESTED_PLATFORMS}"
-        echo "On unsupported platform: ${ON_UNSUPPORTED_PLATFORM}"
-        echo ""
-
-        # ------------------------------------------------------------
-        # Validate each platform by actually solving the Dockerfile.
-        #
-        # IMPORTANT:
-        #   type=cacheonly means NOTHING is pushed.
-        #
-        # This catches failures such as:
-        #   - unavailable packages
-        #   - unsupported binaries
-        #   - failed RUN commands
-        #   - architecture-specific compilation errors
-        #   - unsupported base images
-        # ------------------------------------------------------------
-        for platform in "${platforms[@]}"; do
-          platform="$(echo "${platform}" | xargs)"
-
-          [[ -z "${platform}" ]] && continue
-
-          echo "============================================================"
-          echo "Checking platform: ${platform}"
-          echo "============================================================"
-
-          if docker buildx build \
-              --builder docker-build \
-              --platform "${platform}" \
-              ${{ inputs.build_args }} \
-              --output type=cacheonly \
-              .; then
-
-            echo "✓ ${platform} image can be built"
-
-            if [[ -z "${supported_platforms}" ]]; then
-              supported_platforms="${platform}"
-            else
-              supported_platforms="${supported_platforms},${platform}"
-            fi
-
-          else
-            if [[ "${ON_UNSUPPORTED_PLATFORM}" == "skip" ]]; then
-              echo "::warning::${platform} image cannot be built, skipping platform"
-            else
-              echo "::error::${platform} image cannot be built"
-              exit 1
-            fi
-          fi
-
-          echo ""
-        done
-
-        # ------------------------------------------------------------
-        # Make sure at least one platform succeeded
-        # ------------------------------------------------------------
-        if [[ -z "${supported_platforms}" ]]; then
-          echo "::error::None of the requested platforms can be built."
-          exit 1
-        fi
-
         echo "============================================================"
-        echo "Supported platforms: ${supported_platforms}"
         echo "Building and pushing: ${IMAGE}"
+        echo "Platforms: ${PLATFORMS}"
         echo "============================================================"
         echo ""
 
         # ------------------------------------------------------------
-        # Final build
+        # Build and push
         #
         # This is the ONLY command that pushes an image.
-        # No platform-specific tags are created.
+        # No platform-specific tags are created; buildx pushes a
+        # single manifest list covering all requested platforms.
         # ------------------------------------------------------------
         docker buildx build \
-          --builder docker-build \
-          --platform "${supported_platforms}" \
+          --builder "${BUILDER_NAME}" \
+          --platform "${PLATFORMS}" \
           ${{ inputs.build_args }} \
           -t "${IMAGE}" \
           --output type=image,push=true \

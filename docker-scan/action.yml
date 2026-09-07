@@ -1,0 +1,272 @@
+name: Trivy Container Scan
+description: Scan a container image with Trivy, produce JSON and table reports, and fail on defined severity rules
+
+inputs:
+  image:
+    description: Image reference to scan (e.g. registry.example.com/org/app:tag)
+    required: true
+
+  severity:
+    description: Comma-separated severities to include in the scan/report (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)
+    required: false
+    default: CRITICAL,HIGH,MEDIUM
+
+  fail_on:
+    description: Comma-separated subset of "severity" that causes the action to fail if found. Must be a subset of "severity" to have any effect. Leave empty to report only and never fail the build.
+    required: false
+    default: CRITICAL,HIGH,MEDIUM
+
+  vuln_type:
+    description: Comma-separated vulnerability types to scan (os, library)
+    required: false
+    default: os,library
+
+  ignore_unfixed:
+    description: Ignore vulnerabilities with no available fix
+    required: false
+    default: "false"
+
+  output_dir:
+    description: Directory to write the JSON and table reports into
+    required: false
+    default: trivy-results
+
+  trivy_version:
+    description: Trivy version to install if trivy is not already on PATH
+    required: false
+    default: latest
+
+  pkg_cache:
+    description: Package cache host or base URL to install Trivy through, if an install is needed
+    required: false
+    default: ""
+
+outputs:
+  json_report:
+    description: Path to the JSON report
+    value: ${{ steps.scan.outputs.json_report }}
+
+  table_report:
+    description: Path to the table report
+    value: ${{ steps.scan.outputs.table_report }}
+
+  vulnerability_count:
+    description: Number of vulnerabilities matching fail_on severities
+    value: ${{ steps.scan.outputs.vulnerability_count }}
+
+runs:
+  using: composite
+
+  steps:
+    # ------------------------------------------------------------
+    # Ensure Trivy is installed. Adjust the path below to wherever
+    # the install-trivy composite action lives in this repo.
+    # ------------------------------------------------------------
+    - name: Ensure Trivy is installed
+      shell: bash
+      run: |
+        if ! command -v trivy >/dev/null 2>&1; then
+          echo "trivy_missing=true" >> "${GITHUB_ENV}"
+        else
+          echo "trivy_missing=false" >> "${GITHUB_ENV}"
+        fi
+
+    - name: Install Trivy
+      if: env.trivy_missing == 'true'
+      uses: ./.forgejo/actions/install-trivy
+      with:
+        version: ${{ inputs.trivy_version }}
+        pkg_cache: ${{ inputs.pkg_cache }}
+
+    - id: scan
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # ------------------------------------------------------------
+        # Install dependencies
+        # ------------------------------------------------------------
+        echo "Installing dependencies..."
+
+        if ! command -v jq >/dev/null 2>&1; then
+          if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache jq
+
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y -qq jq
+
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm jq
+
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y jq
+
+          elif command -v yum >/dev/null 2>&1; then
+            yum install -y jq
+
+          else
+            echo "::error::Unable to install dependencies. No supported package manager found."
+            exit 1
+          fi
+        fi
+
+        # ------------------------------------------------------------
+        # Configuration
+        # ------------------------------------------------------------
+        IMAGE="${{ inputs.image }}"
+        SEVERITY="${{ inputs.severity }}"
+        FAIL_ON="${{ inputs.fail_on }}"
+        VULN_TYPE="${{ inputs.vuln_type }}"
+        IGNORE_UNFIXED="${{ inputs.ignore_unfixed }}"
+        OUTPUT_DIR="${{ inputs.output_dir }}"
+
+        # ------------------------------------------------------------
+        # Validate inputs
+        # ------------------------------------------------------------
+        if [[ -z "${IMAGE}" ]]; then
+          echo "::error::image input is empty"
+          exit 1
+        fi
+
+        if [[ -z "${SEVERITY}" ]]; then
+          echo "::error::severity input is empty"
+          exit 1
+        fi
+
+        # fail_on must be a subset of severity, otherwise a vulnerability
+        # could match fail_on but never appear in the report/scan results.
+        # An empty fail_on means "report only, never fail".
+        IFS=',' read -ra fail_sevs <<< "${FAIL_ON}"
+        IFS=',' read -ra report_sevs <<< "${SEVERITY}"
+
+        if [[ -n "${FAIL_ON}" ]]; then
+          for fs in "${fail_sevs[@]}"; do
+            fs="$(echo "${fs}" | xargs)"
+            [[ -z "${fs}" ]] && continue
+
+            match=false
+            for rs in "${report_sevs[@]}"; do
+              rs="$(echo "${rs}" | xargs)"
+              if [[ "${fs}" == "${rs}" ]]; then
+                match=true
+                break
+              fi
+            done
+
+            if [[ "${match}" == "false" ]]; then
+              echo "::error::fail_on severity '${fs}' is not included in severity '${SEVERITY}'"
+              exit 1
+            fi
+          done
+        fi
+
+        mkdir -p "${OUTPUT_DIR}"
+
+        JSON_REPORT="${OUTPUT_DIR}/trivy-results.json"
+        TABLE_REPORT="${OUTPUT_DIR}/trivy-results.txt"
+
+        IGNORE_UNFIXED_FLAG=()
+        if [[ "${IGNORE_UNFIXED}" == "true" ]]; then
+          IGNORE_UNFIXED_FLAG=(--ignore-unfixed)
+        fi
+
+        echo "============================================================"
+        echo "Scanning image: ${IMAGE}"
+        echo "Severity (report): ${SEVERITY}"
+        echo "Severity (fail on): ${FAIL_ON}"
+        echo "Vuln type: ${VULN_TYPE}"
+        echo "============================================================"
+        echo ""
+
+        # ------------------------------------------------------------
+        # Refresh the vulnerability DB once up front so both scans
+        # below use the same DB and don't each try to fetch it.
+        # ------------------------------------------------------------
+        trivy image --download-db-only
+
+        # ------------------------------------------------------------
+        # JSON report (machine readable)
+        # ------------------------------------------------------------
+        if ! trivy image \
+            --severity "${SEVERITY}" \
+            --vuln-type "${VULN_TYPE}" \
+            "${IGNORE_UNFIXED_FLAG[@]}" \
+            --format json \
+            --output "${JSON_REPORT}" \
+            --skip-db-update \
+            --exit-code 0 \
+            "${IMAGE}"; then
+          echo "::error::Trivy scan failed to run against ${IMAGE}"
+          exit 1
+        fi
+
+        # ------------------------------------------------------------
+        # Table report (human readable)
+        # ------------------------------------------------------------
+        trivy image \
+          --severity "${SEVERITY}" \
+          --vuln-type "${VULN_TYPE}" \
+          "${IGNORE_UNFIXED_FLAG[@]}" \
+          --format table \
+          --output "${TABLE_REPORT}" \
+          --skip-db-update \
+          --exit-code 0 \
+          "${IMAGE}"
+
+        echo ""
+        echo "============================================================"
+        echo "Scan results (table)"
+        echo "============================================================"
+        cat "${TABLE_REPORT}"
+        echo ""
+
+        # ------------------------------------------------------------
+        # Count vulnerabilities matching fail_on severities.
+        # An empty fail_on means "never fail" -> count is always 0.
+        # ------------------------------------------------------------
+        if [[ -z "${FAIL_ON}" ]]; then
+          VULN_COUNT=0
+        else
+          VULN_COUNT="$(jq --arg sevs "${FAIL_ON}" '
+            ($sevs | split(",") | map(gsub("^\\s+|\\s+$";""))) as $fail_sevs
+            | [ .Results[]?.Vulnerabilities[]? | select(.Severity as $s | $fail_sevs | index($s)) ]
+            | length
+          ' "${JSON_REPORT}")"
+        fi
+
+        echo "============================================================"
+        echo "Severity breakdown (within reported severities: ${SEVERITY})"
+        echo "============================================================"
+        jq -r '
+          [ .Results[]?.Vulnerabilities[]?.Severity ]
+          | group_by(.)
+          | map({severity: .[0], count: length})
+          | sort_by(.severity)
+          | .[]
+          | "\(.severity): \(.count)"
+        ' "${JSON_REPORT}"
+        echo ""
+
+        echo "Vulnerabilities matching fail_on (${FAIL_ON:-none, report only}): ${VULN_COUNT}"
+        echo ""
+
+        echo "json_report=${JSON_REPORT}" >> "${GITHUB_OUTPUT}"
+        echo "table_report=${TABLE_REPORT}" >> "${GITHUB_OUTPUT}"
+        echo "vulnerability_count=${VULN_COUNT}" >> "${GITHUB_OUTPUT}"
+
+        # ------------------------------------------------------------
+        # Fail the build if any matching vulnerabilities were found.
+        # If fail_on is empty, this is report-only and never fails.
+        # ------------------------------------------------------------
+        if [[ -z "${FAIL_ON}" ]]; then
+          echo "fail_on is empty; report-only mode, not failing the build."
+          exit 0
+        fi
+
+        if [[ "${VULN_COUNT}" -gt 0 ]]; then
+          echo "::error::Found ${VULN_COUNT} vulnerabilities matching fail_on severities (${FAIL_ON}) in ${IMAGE}"
+          exit 1
+        fi
+
+        echo "✓ No vulnerabilities matching fail_on severities (${FAIL_ON}) found."
