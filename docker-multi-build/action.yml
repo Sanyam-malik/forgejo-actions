@@ -1,5 +1,5 @@
-name: Docker Push
-description: Build and push a Docker image for a given set of platforms
+name: Docker Multi Image Build
+description: Build a multi-platform Docker image to an OCI tar archive, without pushing it
 
 inputs:
   registry:
@@ -25,35 +25,48 @@ inputs:
     default: ""
 
   platforms:
-    description: Comma-separated list of platforms to build and push (e.g. output of the platform-check action)
+    description: Comma-separated list of platforms to build
     required: true
 
-  builder_name:
-    description: Name of an existing Buildx builder to reuse (e.g. output of the platform-check action). If omitted, a new random builder is created and removed after the build.
-    required: false
-    default: ""
+outputs:
+  image:
+    description: Fully resolved image reference embedded in the archive (registry/namespace/image:tag)
+    value: ${{ steps.build.outputs.image }}
 
 runs:
   using: composite
 
   steps:
-    - shell: bash
+    - id: build
+      name: Build Docker image
+      shell: bash
+      env:
+        REGISTRY_INPUT: ${{ inputs.registry }}
+        NAMESPACE_INPUT: ${{ inputs.namespace }}
+        IMAGE_NAME_INPUT: ${{ inputs.image }}
+        TAG: ${{ inputs.tag }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+        PLATFORMS: ${{ inputs.platforms }}
       run: |
         set -euo pipefail
 
         # ------------------------------------------------------------
-        # Configuration
+        # Normalize configuration
         # ------------------------------------------------------------
-        REGISTRY="${{ inputs.registry }}"
+        REGISTRY="${REGISTRY_INPUT}"
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
+        REGISTRY="${REGISTRY%/}"
 
-        NAMESPACE="${{ inputs.namespace }}"
-        IMAGE_NAME="${{ inputs.image }}"
-        TAG="${{ inputs.tag }}"
+        NAMESPACE="${NAMESPACE_INPUT}"
+        NAMESPACE="${NAMESPACE#/}"
+        NAMESPACE="${NAMESPACE%/}"
 
-        PLATFORMS="${{ inputs.platforms }}"
-        BUILDER_NAME="${{ inputs.builder_name }}"
+        IMAGE_NAME="${IMAGE_NAME_INPUT}"
+        IMAGE_NAME="${IMAGE_NAME#/}"
+        IMAGE_NAME="${IMAGE_NAME%/}"
+
+        TAG="${TAG:-latest}"
 
         # ------------------------------------------------------------
         # Validate inputs
@@ -73,83 +86,178 @@ runs:
           exit 1
         fi
 
+        if [[ -z "${TAG}" ]]; then
+          echo "::error::tag input is empty"
+          exit 1
+        fi
+
         if [[ -z "${PLATFORMS}" ]]; then
           echo "::error::platforms input is empty. Nothing to build."
           exit 1
         fi
 
+        # ------------------------------------------------------------
+        # Resolve image reference
+        #
+        # Example:
+        #   ghcr.io/my-org/my-app:1.2.3
+        # ------------------------------------------------------------
         IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
 
         # ------------------------------------------------------------
-        # Buildx builder
-        # ------------------------------------------------------------
-        # If builder_name was passed in (e.g. from the platform-check
-        # action), reuse it so build cache from that step carries
-        # over, and leave its lifecycle to whoever created it — do
-        # NOT remove it here.
+        # Derive OCI tarball filename from image reference
         #
-        # If no builder_name was given (standalone run), generate a
-        # random one so concurrent runs on the same runner never
-        # collide, and clean it up unconditionally since this action
-        # is the sole owner of it.
+        # Example:
+        #   ghcr.io/my-org/my-app:1.2.3
+        #
+        # becomes:
+        #   ghcr.io_my-org_my-app_1.2.3.oci.tar
         # ------------------------------------------------------------
-        OWNS_BUILDER=false
+        OCI_FILENAME="$(
+          printf '%s' "${IMAGE}" |
+            sed 's#[/:@]#_#g'
+        ).oci.tar"
 
-        if [[ -z "${BUILDER_NAME}" ]]; then
-          if command -v uuidgen >/dev/null 2>&1; then
-            UUID="$(uuidgen)"
-          elif [[ -r /proc/sys/kernel/random/uuid ]]; then
-            UUID="$(cat /proc/sys/kernel/random/uuid)"
-          else
-            UUID="$(date +%s%N)-${RANDOM}"
-          fi
+        OUTPUT_PATH="${OCI_FILENAME}"
 
-          BUILDER_NAME="build_${UUID}"
-          OWNS_BUILDER=true
-
-          docker buildx create \
-            --name "${BUILDER_NAME}" \
-            --use \
-            --driver docker-container \
-            >/dev/null 2>&1
+        # ------------------------------------------------------------
+        # Buildx builder name
+        # ------------------------------------------------------------
+        if command -v uuidgen >/dev/null 2>&1; then
+          UUID="$(uuidgen)"
+        elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+          UUID="$(cat /proc/sys/kernel/random/uuid)"
         else
-          docker buildx use "${BUILDER_NAME}"
+          UUID="$(date +%s%N)-${RANDOM}"
         fi
 
-        echo "Builder name: ${BUILDER_NAME}"
+        BUILDER_NAME="build_${UUID}"
 
+        # ------------------------------------------------------------
+        # Cleanup
+        #
+        # Always runs because it is registered with EXIT.
+        #
+        # The original exit code is preserved so cleanup cannot turn
+        # a failed build into a successful action.
+        # ------------------------------------------------------------
         cleanup() {
-          if [[ "${OWNS_BUILDER}" == "true" ]]; then
-            echo ""
-            echo "============================================================"
-            echo "Cleaning up Buildx builder"
-            echo "============================================================"
+          local exit_code=$?
 
-            docker buildx rm --force "${BUILDER_NAME}" >/dev/null 2>&1 || true
+          echo ""
+          echo "============================================================"
+          echo "Buildx cleanup"
+          echo "============================================================"
 
-            echo "Buildx cleanup completed."
+          # Remove the temporary builder and its BuildKit container.
+          if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
+            echo "Removing Buildx builder: ${BUILDER_NAME}"
+
+            docker buildx rm \
+              --force \
+              "${BUILDER_NAME}" \
+              >/dev/null 2>&1 || \
+              echo "::warning::Failed to remove Buildx builder: ${BUILDER_NAME}"
+          else
+            echo "Buildx builder already removed: ${BUILDER_NAME}"
           fi
+
+          echo "Buildx cleanup completed."
+
+          exit "${exit_code}"
         }
 
         trap cleanup EXIT
 
+        # ------------------------------------------------------------
+        # Build information
+        # ------------------------------------------------------------
         echo "============================================================"
-        echo "Building and pushing: ${IMAGE}"
-        echo "Platforms: ${PLATFORMS}"
+        echo "Docker Image Build"
+        echo "============================================================"
+        echo "Image reference : ${IMAGE}"
+        echo "Platforms       : ${PLATFORMS}"
+        echo "OCI tarball     : ${OUTPUT_PATH}"
+        echo "Buildx builder  : ${BUILDER_NAME}"
         echo "============================================================"
         echo ""
 
         # ------------------------------------------------------------
-        # Build and push
-        #
-        # This is the ONLY command that pushes an image.
-        # No platform-specific tags are created; buildx pushes a
-        # single manifest list covering all requested platforms.
+        # Create isolated Buildx builder
         # ------------------------------------------------------------
-        docker buildx build \
-          --builder "${BUILDER_NAME}" \
-          --platform "${PLATFORMS}" \
-          ${{ inputs.build_args }} \
-          -t "${IMAGE}" \
-          --output type=image,push=true \
-          .
+        echo "Creating Buildx builder..."
+
+        docker buildx create \
+          --name "${BUILDER_NAME}" \
+          --use \
+          --driver docker-container \
+          >/dev/null
+
+        echo "Buildx builder created: ${BUILDER_NAME}"
+
+        # ------------------------------------------------------------
+        # Build command
+        # ------------------------------------------------------------
+        BUILD_COMMAND=(
+          docker buildx build
+          --builder "${BUILDER_NAME}"
+          --platform "${PLATFORMS}"
+          --tag "${IMAGE}"
+          --output "type=oci,dest=${OUTPUT_PATH}"
+        )
+
+        # ------------------------------------------------------------
+        # Additional build arguments
+        # ------------------------------------------------------------
+        if [[ -n "${BUILD_ARGS}" ]]; then
+          # shellcheck disable=SC2206
+          EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
+          BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
+        fi
+
+        BUILD_COMMAND+=( "." )
+
+        # ------------------------------------------------------------
+        # Build OCI archive
+        # ------------------------------------------------------------
+        echo ""
+        echo "Running Docker Buildx..."
+        echo ""
+
+        "${BUILD_COMMAND[@]}"
+
+        # ------------------------------------------------------------
+        # Verify OCI tarball
+        # ------------------------------------------------------------
+        if [[ ! -f "${OUTPUT_PATH}" ]]; then
+          echo "::error::OCI image tarball was not created: ${OUTPUT_PATH}"
+          exit 1
+        fi
+
+        if [[ ! -s "${OUTPUT_PATH}" ]]; then
+          echo "::error::OCI image tarball is empty: ${OUTPUT_PATH}"
+          exit 1
+        fi
+
+        SIZE="$(
+          du -h "${OUTPUT_PATH}" |
+            cut -f1
+        )"
+
+        # ------------------------------------------------------------
+        # Success
+        # ------------------------------------------------------------
+        echo ""
+        echo "============================================================"
+        echo "OCI image build completed successfully"
+        echo "============================================================"
+        echo "Image reference : ${IMAGE}"
+        echo "Platforms       : ${PLATFORMS}"
+        echo "OCI tarball     : ${OUTPUT_PATH}"
+        echo "Size            : ${SIZE}"
+        echo "============================================================"
+
+        # ------------------------------------------------------------
+        # Action output
+        # ------------------------------------------------------------
+        echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"

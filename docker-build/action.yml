@@ -1,5 +1,5 @@
-name: Docker OCI Export
-description: Build Docker image and export it as an OCI image tarball
+name: Docker Image Build
+description: Build a single-platform Docker image to an OCI tar archive, without pushing it
 
 inputs:
   registry:
@@ -29,29 +29,97 @@ outputs:
     description: Full image reference
     value: ${{ steps.build.outputs.image }}
 
-  tar:
-    description: Path to the generated OCI image tarball
-    value: ${{ steps.build.outputs.tar }}
-
 runs:
   using: composite
 
   steps:
     - id: build
+      name: Build Docker image
       shell: bash
       env:
-        REGISTRY: ${{ inputs.registry }}
-        NAMESPACE: ${{ inputs.namespace }}
-        IMAGE: ${{ inputs.image }}
+        REGISTRY_INPUT: ${{ inputs.registry }}
+        NAMESPACE_INPUT: ${{ inputs.namespace }}
+        IMAGE_INPUT: ${{ inputs.image }}
         TAG: ${{ inputs.tag }}
         BUILD_ARGS: ${{ inputs.build_args }}
       run: |
         set -euo pipefail
 
         # ------------------------------------------------------------
-        # Cleanup Buildx resources when this step exits
+        # Normalize registry
+        # ------------------------------------------------------------
+        REGISTRY="${REGISTRY_INPUT}"
+        REGISTRY="${REGISTRY#http://}"
+        REGISTRY="${REGISTRY#https://}"
+        REGISTRY="${REGISTRY%/}"
+
+        NAMESPACE="${NAMESPACE_INPUT}"
+        NAMESPACE="${NAMESPACE#/}"
+        NAMESPACE="${NAMESPACE%/}"
+
+        IMAGE_NAME="${IMAGE_INPUT}"
+        IMAGE_NAME="${IMAGE_NAME#/}"
+        IMAGE_NAME="${IMAGE_NAME%/}"
+
+        # ------------------------------------------------------------
+        # Validate inputs
+        # ------------------------------------------------------------
+        if [[ -z "${REGISTRY}" ]]; then
+          echo "::error::registry input is empty"
+          exit 1
+        fi
+
+        if [[ -z "${NAMESPACE}" ]]; then
+          echo "::error::namespace input is empty"
+          exit 1
+        fi
+
+        if [[ -z "${IMAGE_NAME}" ]]; then
+          echo "::error::image input is empty"
+          exit 1
+        fi
+
+        if [[ -z "${TAG}" ]]; then
+          echo "::error::tag input is empty"
+          exit 1
+        fi
+
+        # ------------------------------------------------------------
+        # Build image reference
+        # ------------------------------------------------------------
+        IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+
+        echo "============================================================"
+        echo "Docker OCI Export"
+        echo "============================================================"
+        echo "Image reference:"
+        echo "  ${IMAGE_REF}"
+
+        # ------------------------------------------------------------
+        # Derive OCI tarball filename from image reference
         #
-        # This runs on both success and failure.
+        # Example:
+        #   ghcr.io/my-org/my-app:1.2.3
+        #
+        # becomes:
+        #   ghcr.io_my-org_my-app_1.2.3.oci.tar
+        # ------------------------------------------------------------
+        OCI_FILENAME="$(
+          printf '%s' "${IMAGE_REF}" |
+            sed 's#[/:@]#_#g'
+        ).oci.tar"
+
+        OUTPUT="${OCI_FILENAME}"
+
+        echo ""
+        echo "OCI output:"
+        echo "  ${OUTPUT}"
+
+        # ------------------------------------------------------------
+        # Buildx cleanup
+        #
+        # The cleanup runs on both success and failure.
+        # The original exit code is preserved.
         # ------------------------------------------------------------
         cleanup() {
           local exit_code=$?
@@ -80,54 +148,26 @@ runs:
         trap cleanup EXIT
 
         # ------------------------------------------------------------
-        # Normalize registry
-        # ------------------------------------------------------------
-        REGISTRY="${REGISTRY#http://}"
-        REGISTRY="${REGISTRY#https://}"
-        REGISTRY="${REGISTRY%/}"
-
-        # ------------------------------------------------------------
-        # Build image reference
-        # ------------------------------------------------------------
-        IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE}:${TAG}"
-
-        echo "============================================================"
-        echo "Docker OCI Export"
-        echo "============================================================"
-        echo "Image reference:"
-        echo "  ${IMAGE_REF}"
-
-        # ------------------------------------------------------------
-        # Create a filesystem-safe filename from the image reference
-        #
-        # Example:
-        #   ghcr.io/my-org/my-app:1.2.3
-        #
-        # becomes:
-        #   ghcr.io_my-org_my-app_1.2.3.oci.tar
-        # ------------------------------------------------------------
-        OCI_FILENAME="$(
-          printf '%s' "${IMAGE_REF}" |
-          sed 's#[/:@]#_#g'
-        ).oci.tar"
-
-        OUTPUT="${OCI_FILENAME}"
-
-        echo ""
-        echo "OCI output:"
-        echo "  ${OUTPUT}"
-
-        # ------------------------------------------------------------
         # Build and export as OCI image
         # ------------------------------------------------------------
         echo ""
         echo "Building Docker image..."
 
-        docker buildx build \
-          ${BUILD_ARGS} \
-          --tag "${IMAGE_REF}" \
-          --output "type=oci,dest=${OUTPUT}" \
-          .
+        BUILD_COMMAND=(
+          docker buildx build
+          --tag "${IMAGE_REF}"
+          --output "type=oci,dest=${OUTPUT}"
+        )
+
+        if [[ -n "${BUILD_ARGS}" ]]; then
+          # shellcheck disable=SC2206
+          EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
+          BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
+        fi
+
+        BUILD_COMMAND+=( "." )
+
+        "${BUILD_COMMAND[@]}"
 
         # ------------------------------------------------------------
         # Verify output
@@ -144,7 +184,7 @@ runs:
 
         SIZE="$(
           du -h "${OUTPUT}" |
-          cut -f1
+            cut -f1
         )"
 
         echo ""
@@ -160,4 +200,3 @@ runs:
         # Outputs
         # ------------------------------------------------------------
         echo "image=${IMAGE_REF}" >> "${GITHUB_OUTPUT}"
-        echo "tar=${OUTPUT}" >> "${GITHUB_OUTPUT}"
