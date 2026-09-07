@@ -1,37 +1,114 @@
-name: Docker Build
-description: Build Docker image
+name: Docker OCI Export
+description: Build Docker image and export it as an OCI image tarball
 
 inputs:
   registry:
     description: Registry URL
     required: true
+
   namespace:
     description: Registry namespace
     required: true
+
   image:
     description: Image name
     required: true
+
   tag:
     description: Image tag
     required: false
     default: latest
+
   build_args:
     description: Additional docker build arguments (e.g. --build-arg FOO=bar)
     required: false
     default: ""
 
+outputs:
+  image:
+    description: Full image reference
+    value: ${{ steps.build.outputs.image }}
+
+  tar:
+    description: Path to the generated OCI image tarball
+    value: ${{ steps.build.outputs.tar }}
+
 runs:
   using: composite
-  steps:
-    - shell: bash
-      run: |
-        REGISTRY="${{ inputs.registry }}"
 
-        # Remove http:// or https:// if present
+  steps:
+    - id: build
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        NAMESPACE: ${{ inputs.namespace }}
+        IMAGE: ${{ inputs.image }}
+        TAG: ${{ inputs.tag }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+      run: |
+        set -euo pipefail
+
+        # ------------------------------------------------------------
+        # Normalize registry
+        # ------------------------------------------------------------
         REGISTRY="${REGISTRY#http://}"
         REGISTRY="${REGISTRY#https://}"
+        REGISTRY="${REGISTRY%/}"
 
-        docker build \
-          ${{ inputs.build_args }} \
-          -t "${REGISTRY}/${{ inputs.namespace }}/${{ inputs.image }}:${{ inputs.tag }}" \
+        # ------------------------------------------------------------
+        # Build image reference
+        # ------------------------------------------------------------
+        IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE}:${TAG}"
+
+        echo "Image reference:"
+        echo "  ${IMAGE_REF}"
+
+        # ------------------------------------------------------------
+        # Create a filesystem-safe filename from the image reference
+        #
+        # Example:
+        #   ghcr.io/my-org/my-app:1.2.3
+        #
+        # becomes:
+        #   ghcr.io_my-org_my-app_1.2.3.oci.tar
+        # ------------------------------------------------------------
+        OCI_FILENAME="$(
+          printf '%s' "${IMAGE_REF}" |
+          sed 's#[/:@]#_#g'
+        ).oci.tar"
+
+        OUTPUT="${OCI_FILENAME}"
+
+        echo "OCI output:"
+        echo "  ${OUTPUT}"
+
+        # ------------------------------------------------------------
+        # Build and export as OCI image
+        # ------------------------------------------------------------
+        docker buildx build \
+          ${BUILD_ARGS} \
+          --tag "${IMAGE_REF}" \
+          --output "type=oci,dest=${OUTPUT}" \
           .
+
+        # ------------------------------------------------------------
+        # Verify output
+        # ------------------------------------------------------------
+        if [[ ! -f "${OUTPUT}" ]]; then
+          echo "::error::OCI image tarball was not created: ${OUTPUT}"
+          exit 1
+        fi
+
+        SIZE="$(du -h "${OUTPUT}" | cut -f1)"
+
+        echo ""
+        echo "OCI image created successfully."
+        echo "  Image: ${IMAGE_REF}"
+        echo "  File:  ${OUTPUT}"
+        echo "  Size:  ${SIZE}"
+
+        # ------------------------------------------------------------
+        # Outputs
+        # ------------------------------------------------------------
+        echo "image=${IMAGE_REF}" >> "${GITHUB_OUTPUT}"
+        echo "tar=${OUTPUT}" >> "${GITHUB_OUTPUT}"
