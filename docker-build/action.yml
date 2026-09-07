@@ -49,6 +49,37 @@ runs:
         set -euo pipefail
 
         # ------------------------------------------------------------
+        # Cleanup Buildx resources when this step exits
+        #
+        # This runs on both success and failure.
+        # ------------------------------------------------------------
+        cleanup() {
+          local exit_code=$?
+
+          echo ""
+          echo "============================================================"
+          echo "Docker Buildx cleanup"
+          echo "============================================================"
+
+          if docker buildx version >/dev/null 2>&1; then
+            echo "Pruning Buildx build cache..."
+
+            docker buildx prune \
+              --force \
+              >/dev/null 2>&1 || \
+              echo "::warning::Buildx cache cleanup failed."
+
+            echo "Buildx cleanup completed."
+          else
+            echo "Docker Buildx is not available; skipping cleanup."
+          fi
+
+          exit "${exit_code}"
+        }
+
+        trap cleanup EXIT
+
+        # ------------------------------------------------------------
         # Normalize registry
         # ------------------------------------------------------------
         REGISTRY="${REGISTRY#http://}"
@@ -60,6 +91,9 @@ runs:
         # ------------------------------------------------------------
         IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE}:${TAG}"
 
+        echo "============================================================"
+        echo "Docker OCI Export"
+        echo "============================================================"
         echo "Image reference:"
         echo "  ${IMAGE_REF}"
 
@@ -79,12 +113,16 @@ runs:
 
         OUTPUT="${OCI_FILENAME}"
 
+        echo ""
         echo "OCI output:"
         echo "  ${OUTPUT}"
 
         # ------------------------------------------------------------
         # Build and export as OCI image
         # ------------------------------------------------------------
+        echo ""
+        echo "Building Docker image..."
+
         docker buildx build \
           ${BUILD_ARGS} \
           --tag "${IMAGE_REF}" \
@@ -99,13 +137,24 @@ runs:
           exit 1
         fi
 
-        SIZE="$(du -h "${OUTPUT}" | cut -f1)"
+        if [[ ! -s "${OUTPUT}" ]]; then
+          echo "::error::OCI image tarball is empty: ${OUTPUT}"
+          exit 1
+        fi
+
+        SIZE="$(
+          du -h "${OUTPUT}" |
+          cut -f1
+        )"
 
         echo ""
-        echo "OCI image created successfully."
-        echo "  Image: ${IMAGE_REF}"
-        echo "  File:  ${OUTPUT}"
-        echo "  Size:  ${SIZE}"
+        echo "============================================================"
+        echo "OCI image created successfully"
+        echo "============================================================"
+        echo "Image: ${IMAGE_REF}"
+        echo "File:  ${OUTPUT}"
+        echo "Size:  ${SIZE}"
+        echo "============================================================"
 
         # ------------------------------------------------------------
         # Outputs
