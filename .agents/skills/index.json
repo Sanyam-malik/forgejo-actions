@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "forgejo-actions-skills",
+  "version": "1.0.0",
+  "description": "Vendor-neutral AI Agent skills for Forgejo & GitHub composite actions repository",
+  "skills": [
+    {
+      "id": "action-creator",
+      "name": "Action Creator",
+      "description": "Scaffold and create a new composite CI action following repository standards",
+      "path": "action-creator/SKILL.md",
+      "tags": ["ci", "forgejo", "github-actions", "composite-action"]
+    },
+    {
+      "id": "action-validator",
+      "name": "Action Validator",
+      "description": "Lint, validate syntax, check shell safety, and verify action metadata",
+      "path": "action-validator/SKILL.md",
+      "tags": ["validation", "lint", "shellcheck", "yaml"]
+    },
+    {
+      "id": "docker-ci",
+      "name": "Docker CI Manager",
+      "description": "Configure, build, export OCI tarballs, push Docker images, and perform container scans",
+      "path": "docker-ci/SKILL.md",
+      "tags": ["docker", "oci", "containers", "trivy"]
+    },
+    {
+      "id": "runtime-setup",
+      "name": "Runtime Setup Manager",
+      "description": "Create runtime setup actions (Node, Go, Java, Hugo, Gradle) with pkg-cache support",
+      "path": "runtime-setup/SKILL.md",
+      "tags": ["runtime", "node", "go", "java", "gradle", "cache"]
+    },
+    {
+      "id": "release-manager",
+      "name": "Release Tag Manager",
+      "description": "Automate v1 major version tag recreation and release workflows",
+      "path": "release-manager/SKILL.md",
+      "tags": ["git", "release", "tagging", "workflow"]
+    }
+  ]
+}
