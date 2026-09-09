@@ -18,8 +18,7 @@ forgejo-actions/
 ├── deploy-pages/             # Git pages deployment action
 ├── docker-build/             # Docker single-platform build & OCI export
 ├── docker-login/             # Registry login action
-├── docker-multi-build/       # Docker multi-platform build action
-├── docker-platform-check/    # Platform validation utility
+├── docker-multi-build/       # Multi-platform build & platform validation action
 ├── docker-push/              # Docker image push action
 ├── git-clone/                # Git clone utility action
 ├── link-docker-image/        # Package registry image linker

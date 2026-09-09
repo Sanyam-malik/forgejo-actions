@@ -1,5 +1,5 @@
 name: Docker Multi Image Build
-description: Build a multi-platform Docker image to an OCI tar archive, without pushing it
+description: Build a multi-architecture Docker image to an OCI tar archive with platform validation and alias support
 
 inputs:
   registry:
@@ -25,13 +25,23 @@ inputs:
     default: ""
 
   platforms:
-    description: Comma-separated list of platforms to build
-    required: true
+    description: Comma-separated list of target platforms to build (supports aliases like armhf, armv7, x86_64, aarch64)
+    required: false
+    default: linux/amd64,linux/arm64,linux/arm/v7
+
+  validate_platforms:
+    description: Whether to validate platform buildability before building
+    required: false
+    default: "true"
 
 outputs:
   image:
     description: Fully resolved image reference embedded in the archive (registry/namespace/image:tag)
     value: ${{ steps.build.outputs.image }}
+
+  supported_platforms:
+    description: Comma-separated list of platforms that were validated and built
+    value: ${{ steps.build.outputs.supported_platforms }}
 
 runs:
   using: composite
@@ -46,7 +56,8 @@ runs:
         IMAGE_NAME_INPUT: ${{ inputs.image }}
         TAG: ${{ inputs.tag }}
         BUILD_ARGS: ${{ inputs.build_args }}
-        PLATFORMS: ${{ inputs.platforms }}
+        REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+        VALIDATE_PLATFORMS: ${{ inputs.validate_platforms }}
       run: |
         set -euo pipefail
 
@@ -91,7 +102,7 @@ runs:
           exit 1
         fi
 
-        if [[ -z "${PLATFORMS}" ]]; then
+        if [[ -z "${REQUESTED_PLATFORMS}" ]]; then
           echo "::error::platforms input is empty. Nothing to build."
           exit 1
         fi
@@ -121,6 +132,68 @@ runs:
         OUTPUT_PATH="${OCI_FILENAME}"
 
         # ------------------------------------------------------------
+        # Normalize and map platform aliases
+        # ------------------------------------------------------------
+        normalize_platform() {
+          local raw_p="$1"
+          local p
+          p="$(echo "${raw_p}" | xargs)"
+          p="$(echo "${p}" | tr '[:upper:]' '[:lower:]')"
+
+          case "${p}" in
+            linux/arm/v7|linux/arm/7|linux/armv7|linux/armv7l|linux/armhf|arm/v7|arm/7|armv7|armv7l|armhf)
+              echo "linux/arm/v7"
+              ;;
+            linux/arm/v6|linux/arm/6|linux/armv6|linux/armv6l|linux/armel|arm/v6|arm/6|armv6|armv6l|armel)
+              echo "linux/arm/v6"
+              ;;
+            linux/arm64|linux/arm64/v8|linux/arm/v8|linux/aarch64|arm64|aarch64|arm64/v8|arm/v8)
+              echo "linux/arm64"
+              ;;
+            linux/amd64|linux/x86_64|linux/x86-64|linux/x64|amd64|x86_64|x86-64|x64)
+              echo "linux/amd64"
+              ;;
+            linux/386|linux/i386|linux/x86|386|i386|x86)
+              echo "linux/386"
+              ;;
+            linux/ppc64le|ppc64le|linux/ppc64|ppc64)
+              echo "linux/ppc64le"
+              ;;
+            linux/s390x|s390x)
+              echo "linux/s390x"
+              ;;
+            linux/riscv64|riscv64)
+              echo "linux/riscv64"
+              ;;
+            *)
+              if [[ -n "${p}" ]]; then
+                if [[ "${p}" != *"/"* ]]; then
+                  echo "linux/${p}"
+                else
+                  echo "${p}"
+                fi
+              fi
+              ;;
+          esac
+        }
+
+        IFS=',' read -ra RAW_PLATFORMS <<< "${REQUESTED_PLATFORMS}"
+        NORMALIZED_PLATFORMS=()
+
+        for raw_p in "${RAW_PLATFORMS[@]}"; do
+          norm_p="$(normalize_platform "${raw_p}")"
+          [[ -z "${norm_p}" ]] && continue
+          if [[ ! " ${NORMALIZED_PLATFORMS[*]:-} " =~ " ${norm_p} " ]]; then
+            NORMALIZED_PLATFORMS+=("${norm_p}")
+          fi
+        done
+
+        if [[ "${#NORMALIZED_PLATFORMS[@]}" -eq 0 ]]; then
+          echo "::error::No valid platforms resolved from input: ${REQUESTED_PLATFORMS}"
+          exit 1
+        fi
+
+        # ------------------------------------------------------------
         # Buildx builder name
         # ------------------------------------------------------------
         if command -v uuidgen >/dev/null 2>&1; then
@@ -137,9 +210,6 @@ runs:
         # Cleanup
         #
         # Always runs because it is registered with EXIT.
-        #
-        # The original exit code is preserved so cleanup cannot turn
-        # a failed build into a successful action.
         # ------------------------------------------------------------
         cleanup() {
           local exit_code=$?
@@ -149,7 +219,6 @@ runs:
           echo "Buildx cleanup"
           echo "============================================================"
 
-          # Remove the temporary builder and its BuildKit container.
           if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
             echo "Removing Buildx builder: ${BUILDER_NAME}"
 
@@ -170,21 +239,19 @@ runs:
         trap cleanup EXIT
 
         # ------------------------------------------------------------
-        # Build information
+        # Create isolated Buildx builder
         # ------------------------------------------------------------
         echo "============================================================"
-        echo "Docker Image Build"
+        echo "Docker Multi Image Build"
         echo "============================================================"
-        echo "Image reference : ${IMAGE}"
-        echo "Platforms       : ${PLATFORMS}"
-        echo "OCI tarball     : ${OUTPUT_PATH}"
-        echo "Buildx builder  : ${BUILDER_NAME}"
+        echo "Image reference     : ${IMAGE}"
+        echo "Requested platforms : ${REQUESTED_PLATFORMS}"
+        echo "Normalized platforms: ${NORMALIZED_PLATFORMS[*]}"
+        echo "OCI tarball         : ${OUTPUT_PATH}"
+        echo "Buildx builder      : ${BUILDER_NAME}"
         echo "============================================================"
         echo ""
 
-        # ------------------------------------------------------------
-        # Create isolated Buildx builder
-        # ------------------------------------------------------------
         echo "Creating Buildx builder..."
 
         docker buildx create \
@@ -194,6 +261,56 @@ runs:
           >/dev/null
 
         echo "Buildx builder created: ${BUILDER_NAME}"
+        echo ""
+
+        # ------------------------------------------------------------
+        # Validate platforms if enabled
+        # ------------------------------------------------------------
+        SUPPORTED_PLATFORMS=""
+
+        if [[ "${VALIDATE_PLATFORMS}" == "true" ]]; then
+          echo "============================================================"
+          echo "Validating platform buildability"
+          echo "============================================================"
+
+          for platform in "${NORMALIZED_PLATFORMS[@]}"; do
+            echo "Checking platform: ${platform}"
+
+            CHECK_COMMAND=(
+              docker buildx build
+              --builder "${BUILDER_NAME}"
+              --platform "${platform}"
+              --output type=cacheonly
+            )
+
+            if [[ -n "${BUILD_ARGS}" ]]; then
+              # shellcheck disable=SC2206
+              EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
+              CHECK_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
+            fi
+
+            CHECK_COMMAND+=( "." )
+
+            if "${CHECK_COMMAND[@]}"; then
+              echo "✓ ${platform} image can be built"
+              if [[ -z "${SUPPORTED_PLATFORMS}" ]]; then
+                SUPPORTED_PLATFORMS="${platform}"
+              else
+                SUPPORTED_PLATFORMS="${SUPPORTED_PLATFORMS},${platform}"
+              fi
+            else
+              echo "::warning::${platform} image cannot be built, skipping platform"
+            fi
+            echo ""
+          done
+
+          if [[ -z "${SUPPORTED_PLATFORMS}" ]]; then
+            echo "::error::None of the requested platforms can be built."
+            exit 1
+          fi
+        else
+          SUPPORTED_PLATFORMS="$(IFS=','; echo "${NORMALIZED_PLATFORMS[*]}")"
+        fi
 
         # ------------------------------------------------------------
         # Build command
@@ -201,14 +318,11 @@ runs:
         BUILD_COMMAND=(
           docker buildx build
           --builder "${BUILDER_NAME}"
-          --platform "${PLATFORMS}"
+          --platform "${SUPPORTED_PLATFORMS}"
           --tag "${IMAGE}"
           --output "type=oci,dest=${OUTPUT_PATH}"
         )
 
-        # ------------------------------------------------------------
-        # Additional build arguments
-        # ------------------------------------------------------------
         if [[ -n "${BUILD_ARGS}" ]]; then
           # shellcheck disable=SC2206
           EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
@@ -220,8 +334,9 @@ runs:
         # ------------------------------------------------------------
         # Build OCI archive
         # ------------------------------------------------------------
-        echo ""
-        echo "Running Docker Buildx..."
+        echo "============================================================"
+        echo "Building OCI image tarball for platforms: ${SUPPORTED_PLATFORMS}"
+        echo "============================================================"
         echo ""
 
         "${BUILD_COMMAND[@]}"
@@ -252,12 +367,13 @@ runs:
         echo "OCI image build completed successfully"
         echo "============================================================"
         echo "Image reference : ${IMAGE}"
-        echo "Platforms       : ${PLATFORMS}"
+        echo "Platforms       : ${SUPPORTED_PLATFORMS}"
         echo "OCI tarball     : ${OUTPUT_PATH}"
         echo "Size            : ${SIZE}"
         echo "============================================================"
 
         # ------------------------------------------------------------
-        # Action output
+        # Action outputs
         # ------------------------------------------------------------
         echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
+        echo "supported_platforms=${SUPPORTED_PLATFORMS}" >> "${GITHUB_OUTPUT}"

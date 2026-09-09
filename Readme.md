@@ -132,7 +132,12 @@ Build a single-platform Docker image exported directly to a local OCI archive ta
 
 ### `docker-multi-build`
 
-Build multi-architecture Docker images (`linux/amd64`, `linux/arm64`).
+Build multi-architecture Docker images with platform validation and alias support (e.g. `linux/amd64`, `linux/arm64`, `armhf`, `armv7`, `x86_64`, `aarch64`).
+
+**Features:**
+* Automatically normalizes platform aliases (e.g. `armhf`/`armv7` to `linux/arm/v7`, `x86_64` to `linux/amd64`, `aarch64` to `linux/arm64`)
+* Validates platform buildability before building OCI archive
+* Outputs `image` reference and `supported_platforms` list
 
 ```yaml
 - uses: actions/forgejo/docker-multi-build@v1
@@ -141,7 +146,8 @@ Build multi-architecture Docker images (`linux/amd64`, `linux/arm64`).
     namespace: dev
     image: my-app
     tag: latest
-    platforms: "linux/amd64,linux/arm64"
+    platforms: "linux/amd64,arm64,armhf"
+    validate_platforms: "true"
 ```
 
 ---
@@ -158,12 +164,6 @@ Push OCI tarball or local Docker images to the destination registry.
     image: my-app
     tag: latest
 ```
-
----
-
-### `docker-platform-check`
-
-Validate runner architecture compatibility for container builds.
 
 ---
 
@@ -351,7 +351,6 @@ actions/
  ├ docker-build
  ├ docker-login
  ├ docker-multi-build
- ├ docker-platform-check
  ├ docker-push
  ├ git-clone
  ├ link-docker-image

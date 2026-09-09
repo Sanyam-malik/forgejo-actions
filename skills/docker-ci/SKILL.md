@@ -40,6 +40,7 @@ This skill provides guidelines and procedures for AI agents handling Docker cont
 
 3. **Multi-Platform Builds (`docker-multi-build`)**:
    - Utilize Docker Buildx with QEMU or native platform builders (`linux/amd64,linux/arm64`).
+   - Normalizes platform aliases (e.g. `armhf`/`armv7` -> `linux/arm/v7`, `x86_64` -> `linux/amd64`, `aarch64` -> `linux/arm64`) and validates platform buildability before archive creation.
 
 4. **Container Security Scan (`container-scan` & `security-scan`)**:
    - Integrate Trivy for vulnerability detection and Gitleaks for secrets detection.
@@ -48,5 +49,5 @@ This skill provides guidelines and procedures for AI agents handling Docker cont
 ## Standard Action Mapping
 - `docker-login`: Registry authentication helper.
 - `docker-build`: Build & OCI tarball creation without immediate push.
+- `docker-multi-build`: Multi-platform build and platform validation helper.
 - `docker-push`: Push OCI or local images to registry.
-- `docker-platform-check`: Validate system runner architecture compatibility.
