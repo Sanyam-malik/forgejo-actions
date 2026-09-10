@@ -148,6 +148,59 @@ runs:
         trap cleanup EXIT
 
         # ------------------------------------------------------------
+        # Parse extra build args
+        #
+        # BUILD_ARGS is a single string of shell-quoted tokens, e.g.:
+        #   --build-arg FOO=bar --build-arg BAZ="some value"
+        #
+        # We use `eval` (scoped to array assignment only, not the whole
+        # script) so that quoting in BUILD_ARGS is respected instead of
+        # naively splitting on every whitespace character. Plain
+        # `( ${BUILD_ARGS} )` word-splits on ANY whitespace, including
+        # whitespace inside an unquoted value (e.g. a literal, unexpanded
+        # "$(date +%s)" left over from a workflow that expected shell
+        # command substitution to run inside YAML, which it does not).
+        # That kind of stray whitespace silently produces extra
+        # positional arguments to `docker buildx build`, which then
+        # fails with a confusing "requires 1 argument" error pointing at
+        # the wrong place. We fail loudly here instead.
+        # ------------------------------------------------------------
+        EXTRA_BUILD_ARGS=()
+
+        if [[ -n "${BUILD_ARGS}" ]]; then
+          if ! eval "EXTRA_BUILD_ARGS=(${BUILD_ARGS})" 2>/tmp/build_args_error; then
+            echo "::error::Failed to parse build_args input as shell arguments."
+            echo "::error::build_args was: ${BUILD_ARGS}"
+            cat /tmp/build_args_error >&2 || true
+            exit 1
+          fi
+
+          # Sanity check: every parsed token that looks like a value
+          # (comes right after --build-arg) must not itself start with
+          # "--", and every --build-arg must be followed by a value.
+          # This catches cases where unquoted whitespace inside a value
+          # fractured it into multiple tokens.
+          for (( i=0; i<${#EXTRA_BUILD_ARGS[@]}; i++ )); do
+            token="${EXTRA_BUILD_ARGS[$i]}"
+            if [[ "${token}" == "--build-arg" ]]; then
+              next_index=$(( i + 1 ))
+              if (( next_index >= ${#EXTRA_BUILD_ARGS[@]} )); then
+                echo "::error::--build-arg in build_args has no following value."
+                echo "::error::build_args was: ${BUILD_ARGS}"
+                exit 1
+              fi
+              value="${EXTRA_BUILD_ARGS[$next_index]}"
+              if [[ "${value}" == --* ]]; then
+                echo "::error::--build-arg appears to be followed by another flag ('${value}') instead of a KEY=VALUE pair."
+                echo "::error::This usually means a value in build_args contained unquoted whitespace and got split apart."
+                echo "::error::build_args was: ${BUILD_ARGS}"
+                exit 1
+              fi
+            fi
+          done
+        fi
+
+        # ------------------------------------------------------------
         # Build and export as OCI image
         # ------------------------------------------------------------
         echo ""
@@ -159,9 +212,7 @@ runs:
           --output "type=oci,dest=${OUTPUT}"
         )
 
-        if [[ -n "${BUILD_ARGS}" ]]; then
-          # shellcheck disable=SC2206
-          EXTRA_BUILD_ARGS=( ${BUILD_ARGS} )
+        if (( ${#EXTRA_BUILD_ARGS[@]} > 0 )); then
           BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
         fi
 
