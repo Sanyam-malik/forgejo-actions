@@ -1,48 +1,48 @@
 name: Docker Image Sync
 
-description: Sync linked Docker container images from current Forgejo repository package registry to external registries (e.g. GCR, Docker Hub, GHCR) with multi-arch support
+description: >
+  Sync linked Docker container images from the current Forgejo repository
+  package registry to external registries (e.g. GCR, Docker Hub, GHCR) with
+  multi-arch support.
+
+  Note: the calling workflow/job must declare `permissions: packages: read`
+  (or `write` if syncing needs push access back to Forgejo) so the
+  auto-issued job token carries registry scope. Without it, pulling from the
+  Forgejo package registry will fail with "unauthorized: authentication
+  required" even though `docker login` reports success, since login only
+  validates the basic ping and not per-package pull scope.
 
 inputs:
-  forgejo_url:
-    description: Forgejo server URL (defaults to github.server_url)
-    required: false
-    default: ""
-
-  forgejo_token:
-    description: Forgejo API / package registry token (defaults to github.token)
-    required: false
-    default: ""
-
   source_tag:
     description: Source image tag to sync
     required: false
     default: "latest"
 
-  target_registry:
+  registry:
     description: Target container registry URL (e.g. docker.io, gcr.io, ghcr.io)
     required: true
 
-  target_username:
+  username:
     description: Username for target registry authentication
     required: false
     default: ""
 
-  target_token:
+  token:
     description: Password or token for target registry authentication
     required: false
     default: ""
 
-  target_namespace:
+  namespace:
     description: Target registry namespace or organization (defaults to github.repository_owner)
     required: false
     default: ""
 
-  target_image:
+  image:
     description: Target image name override (defaults to auto-discovered package name)
     required: false
     default: ""
 
-  target_tag:
+  tag:
     description: Target image tag or comma-separated list of tags (defaults to source_tag)
     required: false
     default: ""
@@ -65,15 +65,13 @@ runs:
       shell: bash
 
       env:
-        FORGEJO_URL_INPUT: ${{ inputs.forgejo_url }}
-        FORGEJO_TOKEN_INPUT: ${{ inputs.forgejo_token }}
         SRC_TAG_INPUT: ${{ inputs.source_tag }}
-        TGT_REGISTRY_INPUT: ${{ inputs.target_registry }}
-        TGT_USERNAME_INPUT: ${{ inputs.target_username }}
-        TGT_TOKEN_INPUT: ${{ inputs.target_token }}
-        TGT_NAMESPACE_INPUT: ${{ inputs.target_namespace }}
-        TGT_IMAGE_INPUT: ${{ inputs.target_image }}
-        TGT_TAG_INPUT: ${{ inputs.target_tag }}
+        TGT_REGISTRY_INPUT: ${{ inputs.registry }}
+        TGT_USERNAME_INPUT: ${{ inputs.username }}
+        TGT_TOKEN_INPUT: ${{ inputs.token }}
+        TGT_NAMESPACE_INPUT: ${{ inputs.namespace }}
+        TGT_IMAGE_INPUT: ${{ inputs.image }}
+        TGT_TAG_INPUT: ${{ inputs.tag }}
         DEFAULT_SERVER_URL: ${{ github.server_url }}
         DEFAULT_REPOSITORY: ${{ github.repository }}
         DEFAULT_REPO_OWNER: ${{ github.repository_owner }}
@@ -109,14 +107,19 @@ runs:
 
         # ------------------------------------------------------------
         # Auto-discover Forgejo Server, Registry, API URL, and Context
+        # (always derived from the Actions context, no manual override)
         # ------------------------------------------------------------
 
-        FORGEJO_URL="${FORGEJO_URL_INPUT:-${DEFAULT_SERVER_URL:-}}"
-        FORGEJO_TOKEN="${FORGEJO_TOKEN_INPUT:-${DEFAULT_TOKEN:-}}"
+        FORGEJO_URL="${DEFAULT_SERVER_URL:-}"
+        FORGEJO_TOKEN="${DEFAULT_TOKEN:-}"
 
         if [[ -z "${FORGEJO_URL}" ]]; then
-          echo "::error::Forgejo server URL could not be determined."
+          echo "::error::Forgejo server URL could not be determined from github.server_url."
           exit 1
+        fi
+
+        if [[ -z "${FORGEJO_TOKEN}" ]]; then
+          echo "::warning::No job token available (github.token empty) - source registry auth will likely fail."
         fi
 
         SERVER_HOST="$(
@@ -155,7 +158,7 @@ runs:
         EXPLICIT_TGT_TAG="${TGT_TAG_INPUT:-}"
 
         if [[ -z "${TGT_REGISTRY}" ]]; then
-          echo "::error::target_registry input is empty"
+          echo "::error::registry input is empty"
           exit 1
         fi
 
