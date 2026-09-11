@@ -14,12 +14,12 @@ description: >
   `permissions:`.
 
 inputs:
-  source_tag:
+  tag:
     description: Source image tag to sync
     required: false
     default: "latest"
 
-  forgejo_token:
+  token:
     description: >
       Token used to authenticate against the Forgejo source registry.
       Defaults to the auto-issued job token (github.token), which may lack
@@ -29,31 +29,31 @@ inputs:
     required: false
     default: ""
 
-  registry:
+  docker_registry:
     description: Target container registry URL (e.g. docker.io, gcr.io, ghcr.io)
     required: true
 
-  username:
+  docker_registry_username:
     description: Username for target registry authentication
     required: false
     default: ""
 
-  token:
+  docker_registry_token:
     description: Password or token for target registry authentication
     required: false
     default: ""
 
-  namespace:
+  docker_registry_namespace:
     description: Target registry namespace or organization (defaults to github.repository_owner)
     required: false
     default: ""
 
-  image:
+  docker_registry_image:
     description: Target image name override (defaults to auto-discovered package name)
     required: false
     default: ""
 
-  tag:
+  docker_registry_tag:
     description: Target image tag or comma-separated list of tags (defaults to source_tag)
     required: false
     default: ""
@@ -76,14 +76,14 @@ runs:
       shell: bash
 
       env:
-        SRC_TAG_INPUT: ${{ inputs.source_tag }}
-        SRC_TOKEN_INPUT: ${{ inputs.forgejo_token }}
-        TGT_REGISTRY_INPUT: ${{ inputs.registry }}
-        TGT_USERNAME_INPUT: ${{ inputs.username }}
-        TGT_TOKEN_INPUT: ${{ inputs.token }}
-        TGT_NAMESPACE_INPUT: ${{ inputs.namespace }}
-        TGT_IMAGE_INPUT: ${{ inputs.image }}
-        TGT_TAG_INPUT: ${{ inputs.tag }}
+        SRC_TAG_INPUT: ${{ inputs.tag }}
+        SRC_TOKEN_INPUT: ${{ inputs.token }}
+        TGT_REGISTRY_INPUT: ${{ inputs.docker_registry }}
+        TGT_USERNAME_INPUT: ${{ inputs.docker_registry_username }}
+        TGT_TOKEN_INPUT: ${{ inputs.docker_registry_token }}
+        TGT_NAMESPACE_INPUT: ${{ inputs.docker_registry_namespace }}
+        TGT_IMAGE_INPUT: ${{ inputs.docker_registry_image }}
+        TGT_TAG_INPUT: ${{ inputs.docker_registry_tag }}
         DEFAULT_SERVER_URL: ${{ github.server_url }}
         DEFAULT_REPOSITORY: ${{ github.repository }}
         DEFAULT_REPO_OWNER: ${{ github.repository_owner }}
