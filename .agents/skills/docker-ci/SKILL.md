@@ -51,3 +51,4 @@ This skill provides guidelines and procedures for AI agents handling Docker cont
 - `docker-build`: Build & OCI tarball creation without immediate push.
 - `docker-multi-build`: Multi-platform build and platform validation helper.
 - `docker-push`: Push OCI or local images to registry.
+- `docker-sync`: Registry-to-registry container image synchronization helper.

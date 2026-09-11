@@ -1,4 +1,4 @@
-name: "Push Clean History"
+name: "Repository Sync"
 description: "Reinitialize repo and push clean history to any git remote"
 
 inputs:
@@ -28,12 +28,20 @@ runs:
   steps:
     - name: Push clean history to remote
       shell: bash
+      env:
+        GITHUB_REPOSITORY_NAME: ${{ github.repository }}
       run: |
         set -euo pipefail
 
         REMOTE_URL="${{ inputs.remote_url }}"
         TOKEN="${{ inputs.token }}"
         BRANCH="${{ inputs.branch }}"
+
+        # Get repository name (e.g. org/repo)
+        REPO_NAME="${GITHUB_REPOSITORY_NAME:-${GITHUB_REPOSITORY:-}}"
+        if [[ -z "$REPO_NAME" ]]; then
+          REPO_NAME="$(git config --get remote.origin.url 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)(\.git)?$#\1#' || true)"
+        fi
 
         # Get the last commit short SHA from current repo
         if git rev-parse --verify HEAD >/dev/null 2>&1; then
@@ -64,11 +72,13 @@ runs:
         # Add all files
         git add .
 
-        # Commit with "Clean sync up to <SHORT_SHA>" if no message provided
+        # Commit with "Repository sync up to <SHORT_SHA> from <org/repo>" if no message provided
         if [[ -n "${{ inputs.commit_message }}" ]]; then
           COMMIT_MSG="${{ inputs.commit_message }}"
+        elif [[ -n "$REPO_NAME" ]]; then
+          COMMIT_MSG="Repository sync up to ${SHORT_SHA} from ${REPO_NAME}"
         else
-          COMMIT_MSG="Clean sync up to ${SHORT_SHA}"
+          COMMIT_MSG="Repository sync up to ${SHORT_SHA}"
         fi
 
         git commit -m "$COMMIT_MSG"

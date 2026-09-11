@@ -13,13 +13,14 @@ This repository contains reusable **composite actions** designed for **Forgejo, 
 forgejo-actions/
 ├── build-angular/            # Angular build composite action
 ├── build-hugo/               # Hugo site build action
-├── clean-sync/               # Branch/dir sync utility action
+├── repository-sync/          # Branch/dir sync utility action
 ├── container-scan/           # Container image scanning action
 ├── deploy-pages/             # Git pages deployment action
 ├── docker-build/             # Docker single-platform build & OCI export
 ├── docker-login/             # Registry login action
 ├── docker-multi-build/       # Multi-platform build & platform validation action
 ├── docker-push/              # Docker image push action
+├── docker-sync/              # Registry-to-registry image sync action
 ├── git-clone/                # Git clone utility action
 ├── link-docker-image/        # Package registry image linker
 ├── publish-maven/            # Maven/Gradle package publisher

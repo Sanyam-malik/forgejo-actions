@@ -1,0 +1,286 @@
+name: Docker Image Sync
+description: Sync linked Docker container images from current Forgejo repository package registry to external registries (e.g. GCR, Docker Hub, GHCR) with multi-arch support
+
+inputs:
+  forgejo_url:
+    description: Forgejo server URL (defaults to github.server_url)
+    required: false
+    default: ""
+
+  forgejo_token:
+    description: Forgejo API / package registry token (defaults to github.token)
+    required: false
+    default: ""
+
+  source_tag:
+    description: Source image tag to sync
+    required: false
+    default: "latest"
+
+  target_registry:
+    description: Target container registry URL (e.g. docker.io, gcr.io, ghcr.io)
+    required: true
+
+  target_username:
+    description: Username for target registry authentication
+    required: false
+    default: ""
+
+  target_token:
+    description: Password or token for target registry authentication
+    required: false
+    default: ""
+
+  target_namespace:
+    description: Target registry namespace or organization (defaults to github.repository_owner)
+    required: false
+    default: ""
+
+  target_image:
+    description: Target image name override (defaults to auto-discovered package name)
+    required: false
+    default: ""
+
+  target_tag:
+    description: Target image tag or comma-separated list of tags (defaults to source_tag)
+    required: false
+    default: ""
+
+outputs:
+  source_image:
+    description: Fully resolved source image reference (or comma-separated list if multiple)
+    value: ${{ steps.sync.outputs.source_image }}
+
+  synced_images:
+    description: Comma-separated list of fully resolved target image references that were synced
+    value: ${{ steps.sync.outputs.synced_images }}
+
+runs:
+  using: composite
+
+  steps:
+    - id: sync
+      name: Sync Docker image from Forgejo repository
+      shell: bash
+      env:
+        FORGEJO_URL_INPUT: ${{ inputs.forgejo_url }}
+        FORGEJO_TOKEN_INPUT: ${{ inputs.forgejo_token }}
+        SRC_TAG_INPUT: ${{ inputs.source_tag }}
+        TGT_REGISTRY_INPUT: ${{ inputs.target_registry }}
+        TGT_USERNAME_INPUT: ${{ inputs.target_username }}
+        TGT_TOKEN_INPUT: ${{ inputs.target_token }}
+        TGT_NAMESPACE_INPUT: ${{ inputs.target_namespace }}
+        TGT_IMAGE_INPUT: ${{ inputs.target_image }}
+        TGT_TAG_INPUT: ${{ inputs.target_tag }}
+        DEFAULT_SERVER_URL: ${{ github.server_url }}
+        DEFAULT_REPOSITORY: ${{ github.repository }}
+        DEFAULT_REPO_OWNER: ${{ github.repository_owner }}
+        DEFAULT_ACTOR: ${{ github.actor }}
+        DEFAULT_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        # ------------------------------------------------------------
+        # Normalize helper functions
+        # ------------------------------------------------------------
+        normalize_host() {
+          local host="$1"
+          host="${host#http://}"
+          host="${host#https://}"
+          host="${host%/}"
+          echo "${host}"
+        }
+
+        normalize_path() {
+          local p="$1"
+          p="${p#/}"
+          p="${p%/}"
+          echo "${p}"
+        }
+
+        # Auto-discover Forgejo Server, Registry, API URL, and Context
+        FORGEJO_URL="${FORGEJO_URL_INPUT:-${DEFAULT_SERVER_URL:-}}"
+        FORGEJO_TOKEN="${FORGEJO_TOKEN_INPUT:-${DEFAULT_TOKEN:-}}"
+
+        if [[ -z "${FORGEJO_URL}" ]]; then
+          echo "::error::Forgejo server URL could not be determined."
+          exit 1
+        fi
+
+        SERVER_HOST="$(echo "${FORGEJO_URL}" | sed -E 's#^https?://##' | cut -d'/' -f1)"
+        API_URL="${FORGEJO_URL%/}/api/v1"
+
+        SRC_REGISTRY="${SERVER_HOST}"
+        SRC_USERNAME="${DEFAULT_ACTOR:-}"
+        SRC_TOKEN="${FORGEJO_TOKEN}"
+
+        SRC_NAMESPACE="${DEFAULT_REPO_OWNER:-}"
+        if [[ -z "${SRC_NAMESPACE}" && -n "${DEFAULT_REPOSITORY:-}" ]]; then
+          SRC_NAMESPACE="${DEFAULT_REPOSITORY%%/*}"
+        fi
+
+        DEFAULT_SRC_TAG="${SRC_TAG_INPUT:-latest}"
+
+        # Resolve Target Registry & Parameters
+        TGT_REGISTRY="$(normalize_host "${TGT_REGISTRY_INPUT}")"
+        TGT_USERNAME="${TGT_USERNAME_INPUT}"
+        TGT_TOKEN="${TGT_TOKEN_INPUT}"
+        TGT_NAMESPACE="$(normalize_path "${TGT_NAMESPACE_INPUT:-${SRC_NAMESPACE}}")"
+        EXPLICIT_TGT_IMAGE="$(normalize_path "${TGT_IMAGE_INPUT:-}")"
+        EXPLICIT_TGT_TAG="${TGT_TAG_INPUT:-}"
+
+        if [[ -z "${TGT_REGISTRY}" ]]; then
+          echo "::error::target_registry input is empty"
+          exit 1
+        fi
+
+        # ------------------------------------------------------------
+        # Auto-discover container packages via Forgejo API
+        # ------------------------------------------------------------
+        echo "Auto-discovering container packages for repository '${DEFAULT_REPOSITORY}' via Forgejo API..."
+        IMAGES_TO_SYNC=()
+
+        API_ENDPOINT="${API_URL}/repos/${DEFAULT_REPOSITORY}/packages?type=container"
+        HTTP_RESPONSE=""
+
+        if [[ -n "${FORGEJO_TOKEN}" ]]; then
+          HTTP_RESPONSE="$(curl -s -f -H "Authorization: token ${FORGEJO_TOKEN}" "${API_ENDPOINT}" 2>/dev/null || true)"
+        else
+          HTTP_RESPONSE="$(curl -s -f "${API_ENDPOINT}" 2>/dev/null || true)"
+        fi
+
+        if [[ -n "${HTTP_RESPONSE}" ]]; then
+          if command -v jq >/dev/null 2>&1; then
+            while IFS= read -r pkg_name; do
+              [[ -n "${pkg_name}" && "${pkg_name}" != "null" ]] && IMAGES_TO_SYNC+=("${pkg_name}")
+            done < <(echo "${HTTP_RESPONSE}" | jq -r '.[]? | select(.type=="container") | .name' 2>/dev/null || true)
+          else
+            while IFS= read -r block; do
+              pkg_name="$(echo "${block}" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+              [[ -n "${pkg_name}" ]] && IMAGES_TO_SYNC+=("${pkg_name}")
+            done < <(echo "${HTTP_RESPONSE}" | grep -o '{[^}]*}' | grep '"type"[[:space:]]*:[[:space:]]*"container"' 2>/dev/null || true)
+          fi
+        fi
+
+        if [[ "${#IMAGES_TO_SYNC[@]}" -eq 0 ]]; then
+          FALLBACK_IMG="${DEFAULT_REPOSITORY##*/}"
+          echo "No packages returned from API, falling back to repository name: ${FALLBACK_IMG}"
+          IMAGES_TO_SYNC+=("${FALLBACK_IMG}")
+        fi
+
+        echo "Discovered package(s) to sync: ${IMAGES_TO_SYNC[*]}"
+
+        # ------------------------------------------------------------
+        # Registry Login
+        # ------------------------------------------------------------
+        if [[ -n "${SRC_REGISTRY}" && -n "${SRC_USERNAME}" && -n "${SRC_TOKEN}" ]]; then
+          echo "Logging in to source Forgejo registry: ${SRC_REGISTRY}..."
+          echo "${SRC_TOKEN}" | docker login "${SRC_REGISTRY}" -u "${SRC_USERNAME}" --password-stdin
+        fi
+
+        if [[ -n "${TGT_REGISTRY}" && -n "${TGT_USERNAME}" && -n "${TGT_TOKEN}" ]]; then
+          echo "Logging in to target registry: ${TGT_REGISTRY}..."
+          echo "${TGT_TOKEN}" | docker login "${TGT_REGISTRY}" -u "${TGT_USERNAME}" --password-stdin
+        fi
+
+        # ------------------------------------------------------------
+        # Ensure skopeo availability if possible
+        # ------------------------------------------------------------
+        if ! command -v skopeo >/dev/null 2>&1 && ! command -v crane >/dev/null 2>&1 && ! command -v regctl >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1 && [[ "$(id -u)" -eq 0 ]]; then
+            echo "Attempting to install skopeo via apt-get..."
+            (apt-get update -qq && apt-get install -y -qq skopeo) >/dev/null 2>&1 || true
+          elif command -v apk >/dev/null 2>&1 && [[ "$(id -u)" -eq 0 ]]; then
+            echo "Attempting to install skopeo via apk..."
+            apk add --no-cache skopeo >/dev/null 2>&1 || true
+          fi
+        fi
+
+        # ------------------------------------------------------------
+        # Process image sync
+        # ------------------------------------------------------------
+        RESOLVED_SRC_REFS=()
+        SYNCED_IMAGES=()
+
+        for raw_src_img in "${IMAGES_TO_SYNC[@]}"; do
+          img_name="${raw_src_img}"
+          src_tag="${DEFAULT_SRC_TAG}"
+
+          if [[ "${img_name}" == *":"* ]]; then
+            src_tag="${img_name##*:}"
+            img_name="${img_name%:*}"
+          fi
+
+          if [[ -n "${SRC_REGISTRY}" && -n "${SRC_NAMESPACE}" ]]; then
+            SRC_REF="${SRC_REGISTRY}/${SRC_NAMESPACE}/${img_name}:${src_tag}"
+          elif [[ -n "${SRC_REGISTRY}" ]]; then
+            SRC_REF="${SRC_REGISTRY}/${img_name}:${src_tag}"
+          elif [[ -n "${SRC_NAMESPACE}" ]]; then
+            SRC_REF="${SRC_NAMESPACE}/${img_name}:${src_tag}"
+          else
+            SRC_REF="${img_name}:${src_tag}"
+          fi
+
+          RESOLVED_SRC_REFS+=("${SRC_REF}")
+
+          tgt_img_name="${EXPLICIT_TGT_IMAGE:-${img_name}}"
+          tgt_tag_str="${EXPLICIT_TGT_TAG:-${src_tag}}"
+
+          IFS=',' read -ra TAG_LIST <<< "${tgt_tag_str}"
+          for raw_tag in "${TAG_LIST[@]}"; do
+            tag="$(echo "${raw_tag}" | xargs)"
+            [[ -z "${tag}" ]] && continue
+
+            if [[ -n "${TGT_REGISTRY}" && -n "${TGT_NAMESPACE}" ]]; then
+              TGT_REF="${TGT_REGISTRY}/${TGT_NAMESPACE}/${tgt_img_name}:${tag}"
+            elif [[ -n "${TGT_REGISTRY}" ]]; then
+              TGT_REF="${TGT_REGISTRY}/${tgt_img_name}:${tag}"
+            elif [[ -n "${TGT_NAMESPACE}" ]]; then
+              TGT_REF="${TGT_NAMESPACE}/${tgt_img_name}:${tag}"
+            else
+              TGT_REF="${tgt_img_name}:${tag}"
+            fi
+
+            echo "============================================================"
+            echo "Syncing Docker Image"
+            echo "Source : ${SRC_REF}"
+            echo "Target : ${TGT_REF}"
+            echo "============================================================"
+
+            if command -v skopeo >/dev/null 2>&1; then
+              echo "Using skopeo copy (multi-arch preservation)..."
+              skopeo copy --all "docker://${SRC_REF}" "docker://${TGT_REF}"
+            elif command -v crane >/dev/null 2>&1; then
+              echo "Using crane copy..."
+              crane copy "${SRC_REF}" "${TGT_REF}"
+            elif command -v regctl >/dev/null 2>&1; then
+              echo "Using regctl image copy..."
+              regctl image copy "${SRC_REF}" "${TGT_REF}"
+            else
+              echo "Falling back to Docker CLI (pull/tag/push)..."
+              docker pull "${SRC_REF}"
+              docker tag "${SRC_REF}" "${TGT_REF}"
+              docker push "${TGT_REF}"
+              docker rmi "${TGT_REF}" || true
+            fi
+
+            echo "✓ Synced successfully: ${TGT_REF}"
+            echo ""
+
+            SYNCED_IMAGES+=("${TGT_REF}")
+          done
+        done
+
+        if [[ "${#SYNCED_IMAGES[@]}" -eq 0 ]]; then
+          echo "::error::No target images were processed"
+          exit 1
+        fi
+
+        SRC_OUTPUT="$(IFS=','; echo "${RESOLVED_SRC_REFS[*]}")"
+        SYNCED_OUTPUT="$(IFS=','; echo "${SYNCED_IMAGES[*]}")"
+
+        # ------------------------------------------------------------
+        # Set outputs
+        # ------------------------------------------------------------
+        echo "source_image=${SRC_OUTPUT}" >> "${GITHUB_OUTPUT}"
+        echo "synced_images=${SYNCED_OUTPUT}" >> "${GITHUB_OUTPUT}"

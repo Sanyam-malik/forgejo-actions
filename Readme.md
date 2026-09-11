@@ -71,12 +71,12 @@ Deploy static site content to a `gh-pages` branch.
 
 ---
 
-### `clean-sync`
+### `repository-sync`
 
 Reinitialize repository history and push clean commits to a target remote.
 
 ```yaml
-- uses: actions/forgejo/clean-sync@v1
+- uses: actions/forgejo/repository-sync@v1
   with:
     remote_url: https://forgejo.example.com/user/target-repo.git
     token: ${{ secrets.SYNC_TOKEN }}
@@ -163,6 +163,24 @@ Push OCI tarball or local Docker images to the destination registry.
     namespace: dev
     image: my-app
     tag: latest
+```
+
+---
+
+### `docker-sync`
+
+Sync/copy Docker container images from the current Forgejo repository package registry to external registries (e.g. GCR, Docker Hub, GHCR).
+
+Auto-discovers linked container packages from the current repository via Forgejo API:
+
+```yaml
+- uses: actions/forgejo/docker-sync@v1
+  with:
+    target_registry: gcr.io
+    target_namespace: my-gcp-project
+    target_tag: canary,latest
+    target_username: _json_key
+    target_token: ${{ secrets.GCP_SA_KEY }}
 ```
 
 ---
@@ -345,16 +363,17 @@ Available skills in `.agents/skills/` and `skills/`:
 actions/
  ├ build-angular
  ├ build-hugo
- ├ clean-sync
- ├ container-scan
- ├ deploy-pages
- ├ docker-build
- ├ docker-login
- ├ docker-multi-build
- ├ docker-push
- ├ git-clone
- ├ link-docker-image
- ├ publish-maven
+├ container-scan
+├ deploy-pages
+├ docker-build
+├ docker-login
+├ docker-multi-build
+├ docker-push
+├ docker-sync
+├ git-clone
+├ link-docker-image
+├ publish-maven
+├ repository-sync
  ├ security-scan
  ├ setup-cache
  ├ setup-docker
