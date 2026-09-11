@@ -5,18 +5,29 @@ description: >
   package registry to external registries (e.g. GCR, Docker Hub, GHCR) with
   multi-arch support.
 
-  Note: the calling workflow/job must declare `permissions: packages: read`
-  (or `write` if syncing needs push access back to Forgejo) so the
-  auto-issued job token carries registry scope. Without it, pulling from the
-  Forgejo package registry will fail with "unauthorized: authentication
-  required" even though `docker login` reports success, since login only
-  validates the basic ping and not per-package pull scope.
+  Note: the auto-issued job token (github.token) may not carry package
+  registry scope on your instance, which shows up as "unauthorized:
+  authentication required" on the copy step even though `docker login`
+  reports success (login only validates the basic ping, not per-package pull
+  scope). If that happens, pass a personal access token with package read
+  permission via the `source_token` input instead of changing workflow-level
+  `permissions:`.
 
 inputs:
   source_tag:
     description: Source image tag to sync
     required: false
     default: "latest"
+
+  source_token:
+    description: >
+      Token used to authenticate against the Forgejo source registry.
+      Defaults to the auto-issued job token (github.token), which may lack
+      package-registry scope depending on your instance. Pass a personal
+      access token with package read permission here to bypass that without
+      changing workflow-level `permissions:`.
+    required: false
+    default: ""
 
   registry:
     description: Target container registry URL (e.g. docker.io, gcr.io, ghcr.io)
@@ -66,6 +77,7 @@ runs:
 
       env:
         SRC_TAG_INPUT: ${{ inputs.source_tag }}
+        SRC_TOKEN_INPUT: ${{ inputs.source_token }}
         TGT_REGISTRY_INPUT: ${{ inputs.registry }}
         TGT_USERNAME_INPUT: ${{ inputs.username }}
         TGT_TOKEN_INPUT: ${{ inputs.token }}
@@ -111,7 +123,7 @@ runs:
         # ------------------------------------------------------------
 
         FORGEJO_URL="${DEFAULT_SERVER_URL:-}"
-        FORGEJO_TOKEN="${DEFAULT_TOKEN:-}"
+        FORGEJO_TOKEN="${SRC_TOKEN_INPUT:-${DEFAULT_TOKEN:-}}"
 
         if [[ -z "${FORGEJO_URL}" ]]; then
           echo "::error::Forgejo server URL could not be determined from github.server_url."
