@@ -479,7 +479,7 @@ runs:
               echo "Using auth file: ${DOCKER_AUTH_FILE}"
 
               skopeo copy \
-                --all \
+                --multi-arch all \
                 --authfile "${DOCKER_AUTH_FILE}" \
                 "docker://${SRC_REF}" \
                 "docker://${TGT_REF}"
