@@ -203,23 +203,29 @@ runs:
 
         if [[ -n "${HTTP_RESPONSE}" ]]; then
           if command -v jq >/dev/null 2>&1; then
+
             while IFS= read -r pkg_name; do
-              [[ -n "${pkg_name}" && "${pkg_name}" != "null" ]] &&
+              if [[ -n "${pkg_name}" && "${pkg_name}" != "null" ]]; then
                 IMAGES_TO_SYNC+=("${pkg_name}")
+              fi
             done < <(
               echo "${HTTP_RESPONSE}" |
                 jq -r '.[]? | select(.type=="container") | .name' \
                 2>/dev/null || true
             )
+
           else
+
             while IFS= read -r block; do
+
               pkg_name="$(
                 echo "${block}" |
                   sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
               )"
 
-              [[ -n "${pkg_name}" ]] &&
+              if [[ -n "${pkg_name}" ]]; then
                 IMAGES_TO_SYNC+=("${pkg_name}")
+              fi
 
             done < <(
               echo "${HTTP_RESPONSE}" |
@@ -227,10 +233,16 @@ runs:
                 grep '"type"[[:space:]]*:[[:space:]]*"container"' \
                 2>/dev/null || true
             )
+
           fi
         fi
 
+        # ------------------------------------------------------------
+        # Fallback to repository name
+        # ------------------------------------------------------------
+
         if [[ "${#IMAGES_TO_SYNC[@]}" -eq 0 ]]; then
+
           FALLBACK_IMG="${DEFAULT_REPOSITORY##*/}"
 
           echo "No packages returned from API, falling back to repository name: ${FALLBACK_IMG}"
@@ -251,9 +263,15 @@ runs:
           echo "Logging in to source Forgejo registry: ${SRC_REGISTRY}..."
 
           echo "${SRC_TOKEN}" |
-            docker login "${SRC_REGISTRY}" \
+            docker login \
+              "${SRC_REGISTRY}" \
               -u "${SRC_USERNAME}" \
               --password-stdin
+
+        else
+
+          echo "::warning::Source registry credentials are incomplete."
+
         fi
 
         if [[ -n "${TGT_REGISTRY}" &&
@@ -263,10 +281,30 @@ runs:
           echo "Logging in to target registry: ${TGT_REGISTRY}..."
 
           echo "${TGT_TOKEN}" |
-            docker login "${TGT_REGISTRY}" \
+            docker login \
+              "${TGT_REGISTRY}" \
               -u "${TGT_USERNAME}" \
               --password-stdin
+
+        else
+
+          echo "::warning::Target registry credentials are incomplete."
+
         fi
+
+        # ------------------------------------------------------------
+        # Determine Docker authentication file
+        # ------------------------------------------------------------
+
+        DOCKER_CONFIG_DIR="${DOCKER_CONFIG:-${HOME}/.docker}"
+        DOCKER_AUTH_FILE="${DOCKER_CONFIG_DIR}/config.json"
+
+        if [[ ! -f "${DOCKER_AUTH_FILE}" ]]; then
+          echo "::error::Docker authentication file not found: ${DOCKER_AUTH_FILE}"
+          exit 1
+        fi
+
+        echo "Docker authentication file: ${DOCKER_AUTH_FILE}"
 
         # ------------------------------------------------------------
         # Ensure skopeo availability if possible
@@ -292,8 +330,25 @@ runs:
             echo "Attempting to install skopeo via apk..."
 
             apk add --no-cache skopeo >/dev/null 2>&1 || true
+
           fi
         fi
+
+        # ------------------------------------------------------------
+        # Verify available copy tool
+        # ------------------------------------------------------------
+
+        if command -v skopeo >/dev/null 2>&1; then
+          COPY_TOOL="skopeo"
+        elif command -v crane >/dev/null 2>&1; then
+          COPY_TOOL="crane"
+        elif command -v regctl >/dev/null 2>&1; then
+          COPY_TOOL="regctl"
+        else
+          COPY_TOOL="docker"
+        fi
+
+        echo "Selected image copy tool: ${COPY_TOOL}"
 
         # ------------------------------------------------------------
         # Process image sync
@@ -307,7 +362,10 @@ runs:
           img_name="${raw_src_img}"
           src_tag="${DEFAULT_SRC_TAG}"
 
+          # ----------------------------------------------------------
           # Separate image tag from image name
+          # ----------------------------------------------------------
+
           if [[ "${img_name}" == *":"* ]]; then
             src_tag="${img_name##*:}"
             img_name="${img_name%:*}"
@@ -319,7 +377,7 @@ runs:
           )"
 
           # ----------------------------------------------------------
-          # Build source reference
+          # Build source image reference
           # ----------------------------------------------------------
 
           if [[ -n "${SRC_REGISTRY}" &&
@@ -338,12 +396,13 @@ runs:
           else
 
             SRC_REF="${img_name}:${src_tag}"
+
           fi
 
           RESOLVED_SRC_REFS+=("${SRC_REF}")
 
           # ----------------------------------------------------------
-          # Build target reference
+          # Build target image reference
           # ----------------------------------------------------------
 
           tgt_img_name="${EXPLICIT_TGT_IMAGE:-${img_name}}"
@@ -362,6 +421,10 @@ runs:
 
             [[ -z "${tag}" ]] && continue
 
+            # --------------------------------------------------------
+            # Build target reference
+            # --------------------------------------------------------
+
             if [[ -n "${TGT_REGISTRY}" &&
                   -n "${TGT_NAMESPACE}" ]]; then
 
@@ -378,10 +441,11 @@ runs:
             else
 
               TGT_REF="${tgt_img_name}:${tag}"
+
             fi
 
             # --------------------------------------------------------
-            # Sync
+            # Display sync information
             # --------------------------------------------------------
 
             echo "============================================================"
@@ -390,15 +454,26 @@ runs:
             echo "Target : ${TGT_REF}"
             echo "============================================================"
 
-            if command -v skopeo >/dev/null 2>&1; then
+            # --------------------------------------------------------
+            # Skopeo
+            # --------------------------------------------------------
+
+            if [[ "${COPY_TOOL}" == "skopeo" ]]; then
 
               echo "Using skopeo copy (multi-arch preservation)..."
+              echo "Using auth file: ${DOCKER_AUTH_FILE}"
 
-              skopeo copy --all \
+              skopeo copy \
+                --all \
+                --authfile "${DOCKER_AUTH_FILE}" \
                 "docker://${SRC_REF}" \
                 "docker://${TGT_REF}"
 
-            elif command -v crane >/dev/null 2>&1; then
+            # --------------------------------------------------------
+            # Crane
+            # --------------------------------------------------------
+
+            elif [[ "${COPY_TOOL}" == "crane" ]]; then
 
               echo "Using crane copy..."
 
@@ -406,13 +481,21 @@ runs:
                 "${SRC_REF}" \
                 "${TGT_REF}"
 
-            elif command -v regctl >/dev/null 2>&1; then
+            # --------------------------------------------------------
+            # Regctl
+            # --------------------------------------------------------
+
+            elif [[ "${COPY_TOOL}" == "regctl" ]]; then
 
               echo "Using regctl image copy..."
 
               regctl image copy \
                 "${SRC_REF}" \
                 "${TGT_REF}"
+
+            # --------------------------------------------------------
+            # Docker fallback
+            # --------------------------------------------------------
 
             else
 
@@ -427,7 +510,12 @@ runs:
               docker push "${TGT_REF}"
 
               docker rmi "${TGT_REF}" || true
+
             fi
+
+            # --------------------------------------------------------
+            # Success
+            # --------------------------------------------------------
 
             echo "✓ Synced successfully: ${TGT_REF}"
             echo ""
@@ -455,3 +543,9 @@ runs:
 
         echo "source_image=${SRC_OUTPUT}" >> "${GITHUB_OUTPUT}"
         echo "synced_images=${SYNCED_OUTPUT}" >> "${GITHUB_OUTPUT}"
+
+        echo "============================================================"
+        echo "Docker Image Sync Complete"
+        echo "Source : ${SRC_OUTPUT}"
+        echo "Target : ${SYNCED_OUTPUT}"
+        echo "============================================================"
