@@ -23,16 +23,27 @@ runs:
   steps:
     - shell: bash
       run: |
+        set -euo pipefail
+
         REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
 
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-          -u "${{ inputs.username }}:${{ inputs.token }}" \
-          "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}/-/link/$REPO_NAME")
+        PACKAGE_INFO=$(curl -s -u "${{ inputs.username }}:${{ inputs.token }}" \
+          "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}")
 
-        if [ "$HTTP_STATUS" -eq 201 ]; then
-          echo "Package linked successfully."
-        elif [ "$HTTP_STATUS" -eq 409 ]; then
-          echo "Package already linked."
+        if echo "$PACKAGE_INFO" | grep -qi "\"repository\":{\"name\":\"$REPO_NAME\""; then
+          echo "Package already linked to $REPO_NAME."
         else
-          echo "Unexpected HTTP status: $HTTP_STATUS"
+          echo "Package not linked, linking via API..."
+
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -u "${{ inputs.username }}:${{ inputs.token }}" \
+            "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}/-/link/$REPO_NAME")
+
+          if [ "$HTTP_STATUS" -eq 201 ]; then
+            echo "Package linked successfully."
+          elif [ "$HTTP_STATUS" -eq 409 ]; then
+            echo "Package already linked."
+          else
+            echo "Unexpected HTTP status: $HTTP_STATUS"
+          fi
         fi
