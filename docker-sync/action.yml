@@ -1,17 +1,10 @@
+
 name: Docker Image Sync
 
 description: >
   Sync linked Docker container images from the current Forgejo repository
   package registry to external registries (e.g. GCR, Docker Hub, GHCR) with
   multi-arch support.
-
-  Note: the auto-issued job token (github.token) may not carry package
-  registry scope on your instance, which shows up as "unauthorized:
-  authentication required" on the copy step even though `docker login`
-  reports success (login only validates the basic ping, not per-package pull
-  scope). If that happens, pass a personal access token with package read
-  permission via the `forgejo_token` input instead of changing workflow-level
-  `permissions:`.
 
 inputs:
   tag:
@@ -25,7 +18,7 @@ inputs:
       Defaults to the auto-issued job token (github.token), which may lack
       package-registry scope depending on your instance. Pass a personal
       access token with package read permission here to bypass that without
-      changing workflow-level `permissions:`.
+      changing workflow-level permissions.
     required: false
     default: ""
 
@@ -84,6 +77,7 @@ runs:
         TGT_NAMESPACE_INPUT: ${{ inputs.docker_registry_namespace }}
         TGT_IMAGE_INPUT: ${{ inputs.docker_registry_image }}
         TGT_TAG_INPUT: ${{ inputs.docker_registry_tag }}
+
         DEFAULT_SERVER_URL: ${{ github.server_url }}
         DEFAULT_REPOSITORY: ${{ github.repository }}
         DEFAULT_REPO_OWNER: ${{ github.repository_owner }}
@@ -92,11 +86,11 @@ runs:
 
       run: |
         set -euo pipefail
-
+        
         # ------------------------------------------------------------
         # Normalize helper functions
         # ------------------------------------------------------------
-
+        
         normalize_host() {
           local host="$1"
           host="${host#http://}"
@@ -104,103 +98,102 @@ runs:
           host="${host%/}"
           echo "${host}"
         }
-
+        
         normalize_path() {
           local p="$1"
           p="${p#/}"
           p="${p%/}"
           echo "${p}"
         }
-
+        
         # Docker repository/image names must be lowercase.
         normalize_image_component() {
           echo "$1" | tr '[:upper:]' '[:lower:]'
         }
-
+        
         # ------------------------------------------------------------
         # Auto-discover Forgejo Server, Registry, API URL, and Context
-        # (always derived from the Actions context, no manual override)
         # ------------------------------------------------------------
-
+        
         FORGEJO_URL="${DEFAULT_SERVER_URL:-}"
         FORGEJO_TOKEN="${SRC_TOKEN_INPUT:-${DEFAULT_TOKEN:-}}"
-
+        
         if [[ -z "${FORGEJO_URL}" ]]; then
           echo "::error::Forgejo server URL could not be determined from github.server_url."
           exit 1
         fi
-
+        
         if [[ -z "${FORGEJO_TOKEN}" ]]; then
           echo "::warning::No job token available (github.token empty) - source registry auth will likely fail."
         fi
-
+        
         SERVER_HOST="$(
           echo "${FORGEJO_URL}" |
             sed -E 's#^https?://##' |
             cut -d'/' -f1
         )"
-
+        
         API_URL="${FORGEJO_URL%/}/api/v1"
-
+        
         SRC_REGISTRY="${SERVER_HOST}"
         SRC_USERNAME="${DEFAULT_ACTOR:-}"
         SRC_TOKEN="${FORGEJO_TOKEN}"
-
+        
         SRC_NAMESPACE="${DEFAULT_REPO_OWNER:-}"
-
+        
         if [[ -z "${SRC_NAMESPACE}" && -n "${DEFAULT_REPOSITORY:-}" ]]; then
           SRC_NAMESPACE="${DEFAULT_REPOSITORY%%/*}"
         fi
-
+        
         DEFAULT_SRC_TAG="${SRC_TAG_INPUT:-latest}"
-
+        
         # ------------------------------------------------------------
         # Resolve Target Registry & Parameters
         # ------------------------------------------------------------
-
+        
         TGT_REGISTRY="$(normalize_host "${TGT_REGISTRY_INPUT}")"
         TGT_USERNAME="${TGT_USERNAME_INPUT}"
         TGT_TOKEN="${TGT_TOKEN_INPUT}"
-
+        
         TGT_NAMESPACE="$(
           normalize_path "${TGT_NAMESPACE_INPUT:-${SRC_NAMESPACE}}"
         )"
-
+        
         EXPLICIT_TGT_IMAGE="$(normalize_path "${TGT_IMAGE_INPUT:-}")"
         EXPLICIT_TGT_TAG="${TGT_TAG_INPUT:-}"
-
+        
         if [[ -z "${TGT_REGISTRY}" ]]; then
           echo "::error::registry input is empty"
           exit 1
         fi
-
+        
         # ------------------------------------------------------------
         # Normalize Docker repository components
         # ------------------------------------------------------------
-
+        
         SRC_NAMESPACE="$(
           normalize_image_component "${SRC_NAMESPACE}"
         )"
-
+        
         TGT_NAMESPACE="$(
           normalize_image_component "${TGT_NAMESPACE}"
         )"
-
+        
         EXPLICIT_TGT_IMAGE="$(
           normalize_image_component "${EXPLICIT_TGT_IMAGE}"
         )"
-
+        
         # ------------------------------------------------------------
         # Auto-discover container packages via Forgejo API
         # ------------------------------------------------------------
-
+        
         echo "Auto-discovering container packages for repository '${DEFAULT_REPOSITORY}' via Forgejo API..."
-
+        
         IMAGES_TO_SYNC=()
-
+        
         API_ENDPOINT="${API_URL}/repos/${DEFAULT_REPOSITORY}/packages?type=container"
         HTTP_RESPONSE=""
-
+        
         if [[ -n "${FORGEJO_TOKEN}" ]]; then
           HTTP_RESPONSE="$(
             curl -s -f \
@@ -215,10 +208,11 @@ runs:
               2>/dev/null || true
           )"
         fi
-
+        
         if [[ -n "${HTTP_RESPONSE}" ]]; then
+        
           if command -v jq >/dev/null 2>&1; then
-
+        
             while IFS= read -r pkg_name; do
               if [[ -n "${pkg_name}" && "${pkg_name}" != "null" ]]; then
                 IMAGES_TO_SYNC+=("${pkg_name}")
@@ -228,337 +222,333 @@ runs:
                 jq -r '.[]? | select(.type=="container") | .name' \
                 2>/dev/null || true
             )
-
+        
           else
-
+        
             while IFS= read -r block; do
-
+        
               pkg_name="$(
                 echo "${block}" |
                   sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
               )"
-
+        
               if [[ -n "${pkg_name}" ]]; then
                 IMAGES_TO_SYNC+=("${pkg_name}")
               fi
-
+        
             done < <(
               echo "${HTTP_RESPONSE}" |
                 grep -o '{[^}]*}' |
                 grep '"type"[[:space:]]*:[[:space:]]*"container"' \
                 2>/dev/null || true
             )
-
+        
           fi
         fi
-
+        
         # ------------------------------------------------------------
         # Fallback to repository name
         # ------------------------------------------------------------
-
+        
         if [[ "${#IMAGES_TO_SYNC[@]}" -eq 0 ]]; then
-
+        
           FALLBACK_IMG="${DEFAULT_REPOSITORY##*/}"
-
+        
           echo "No packages returned from API, falling back to repository name: ${FALLBACK_IMG}"
-
+        
           IMAGES_TO_SYNC+=("${FALLBACK_IMG}")
         fi
-
+        
         echo "Discovered package(s) to sync: ${IMAGES_TO_SYNC[*]}"
-
+        
         # ------------------------------------------------------------
         # Registry Login
         # ------------------------------------------------------------
-
+        
         if [[ -n "${SRC_REGISTRY}" &&
               -n "${SRC_USERNAME}" &&
               -n "${SRC_TOKEN}" ]]; then
-
+        
           echo "Logging in to source Forgejo registry: ${SRC_REGISTRY}..."
-
+        
           echo "${SRC_TOKEN}" |
             docker login \
               "${SRC_REGISTRY}" \
               -u "${SRC_USERNAME}" \
               --password-stdin
-
+        
         else
-
+        
           echo "::warning::Source registry credentials are incomplete."
-
+        
         fi
-
+        
         if [[ -n "${TGT_REGISTRY}" &&
               -n "${TGT_USERNAME}" &&
               -n "${TGT_TOKEN}" ]]; then
-
+        
           echo "Logging in to target registry: ${TGT_REGISTRY}..."
-
+        
           echo "${TGT_TOKEN}" |
             docker login \
               "${TGT_REGISTRY}" \
               -u "${TGT_USERNAME}" \
               --password-stdin
-
+        
         else
-
+        
           echo "::warning::Target registry credentials are incomplete."
-
+        
         fi
-
+        
         # ------------------------------------------------------------
         # Determine Docker authentication file
         # ------------------------------------------------------------
-
+        
         DOCKER_CONFIG_DIR="${DOCKER_CONFIG:-${HOME}/.docker}"
         DOCKER_AUTH_FILE="${DOCKER_CONFIG_DIR}/config.json"
-
+        
         if [[ ! -f "${DOCKER_AUTH_FILE}" ]]; then
           echo "::error::Docker authentication file not found: ${DOCKER_AUTH_FILE}"
           exit 1
         fi
-
+        
         echo "Docker authentication file: ${DOCKER_AUTH_FILE}"
-
+        
         # ------------------------------------------------------------
-        # Ensure skopeo availability if possible
+        # Install Crane if necessary
         # ------------------------------------------------------------
-
-        if ! command -v skopeo >/dev/null 2>&1 &&
-           ! command -v crane >/dev/null 2>&1 &&
-           ! command -v regctl >/dev/null 2>&1; then
-
-          if command -v apt-get >/dev/null 2>&1 &&
-             [[ "$(id -u)" -eq 0 ]]; then
-
-            echo "Attempting to install skopeo via apt-get..."
-
-            (
-              apt-get update -qq &&
-              apt-get install -y -qq skopeo
-            ) >/dev/null 2>&1 || true
-
-          elif command -v apk >/dev/null 2>&1 &&
-               [[ "$(id -u)" -eq 0 ]]; then
-
-            echo "Attempting to install skopeo via apk..."
-
-            apk add --no-cache skopeo >/dev/null 2>&1 || true
-
+        
+        if ! command -v crane >/dev/null 2>&1; then
+        
+          echo "Crane not found. Installing crane..."
+        
+          ARCH="$(uname -m)"
+        
+          case "${ARCH}" in
+            x86_64|amd64)
+              CRANE_ARCH="x86_64"
+              ;;
+            aarch64|arm64)
+              CRANE_ARCH="arm64"
+              ;;
+            armv7l|armv7)
+              CRANE_ARCH="armv7"
+              ;;
+            *)
+              echo "::error::Unsupported architecture for crane: ${ARCH}"
+              exit 1
+              ;;
+          esac
+        
+          CRANE_VERSION="$(
+            curl -fsSL \
+              https://api.github.com/repos/google/go-containerregistry/releases/latest |
+              jq -r '.tag_name'
+          )"
+        
+          if [[ -z "${CRANE_VERSION}" || "${CRANE_VERSION}" == "null" ]]; then
+            echo "::error::Unable to determine latest crane version."
+            exit 1
           fi
+        
+          echo "Installing crane ${CRANE_VERSION} for ${CRANE_ARCH}..."
+        
+          CRANE_URL="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
+        
+          TMP_DIR="$(mktemp -d)"
+        
+          curl -fsSL \
+            "${CRANE_URL}" \
+            -o "${TMP_DIR}/crane.tar.gz"
+        
+          tar -xzf \
+            "${TMP_DIR}/crane.tar.gz" \
+            -C "${TMP_DIR}"
+        
+          if [[ ! -f "${TMP_DIR}/crane" ]]; then
+            echo "::error::Crane binary was not found in downloaded archive."
+            rm -rf "${TMP_DIR}"
+            exit 1
+          fi
+        
+          install -m 0755 \
+            "${TMP_DIR}/crane" \
+            /usr/local/bin/crane
+        
+          rm -rf "${TMP_DIR}"
+        
         fi
-
-        # ------------------------------------------------------------
-        # Verify available copy tool
-        # ------------------------------------------------------------
-
-        if command -v skopeo >/dev/null 2>&1; then
-          COPY_TOOL="skopeo"
-        elif command -v crane >/dev/null 2>&1; then
-          COPY_TOOL="crane"
-        elif command -v regctl >/dev/null 2>&1; then
-          COPY_TOOL="regctl"
-        else
-          COPY_TOOL="docker"
+        
+        if ! command -v crane >/dev/null 2>&1; then
+          echo "::error::Crane installation failed."
+          exit 1
         fi
-
+        
+        echo "Crane version:"
+        crane version || true
+        
+        # ------------------------------------------------------------
+        # Select copy tool
+        #
+        # Crane is deliberately preferred over Skopeo because the
+        # Skopeo version available on some runners fails when a
+        # multi-arch image contains an in-toto provenance attestation:
+        #
+        # unsupported MIME type for compression:
+        # application/vnd.in-toto+json
+        # ------------------------------------------------------------
+        
+        COPY_TOOL="crane"
+        
         echo "Selected image copy tool: ${COPY_TOOL}"
-
+        
         # ------------------------------------------------------------
         # Process image sync
         # ------------------------------------------------------------
-
+        
         RESOLVED_SRC_REFS=()
         SYNCED_IMAGES=()
-
+        
         for raw_src_img in "${IMAGES_TO_SYNC[@]}"; do
-
+        
           img_name="${raw_src_img}"
           src_tag="${DEFAULT_SRC_TAG}"
-
+        
           # ----------------------------------------------------------
           # Separate image tag from image name
           # ----------------------------------------------------------
-
+        
           if [[ "${img_name}" == *":"* ]]; then
             src_tag="${img_name##*:}"
             img_name="${img_name%:*}"
           fi
-
+        
           # Docker repository names must be lowercase.
           img_name="$(
             normalize_image_component "${img_name}"
           )"
-
+        
           # ----------------------------------------------------------
           # Build source image reference
           # ----------------------------------------------------------
-
+        
           if [[ -n "${SRC_REGISTRY}" &&
                 -n "${SRC_NAMESPACE}" ]]; then
-
+        
             SRC_REF="${SRC_REGISTRY}/${SRC_NAMESPACE}/${img_name}:${src_tag}"
-
+        
           elif [[ -n "${SRC_REGISTRY}" ]]; then
-
+        
             SRC_REF="${SRC_REGISTRY}/${img_name}:${src_tag}"
-
+        
           elif [[ -n "${SRC_NAMESPACE}" ]]; then
-
+        
             SRC_REF="${SRC_NAMESPACE}/${img_name}:${src_tag}"
-
+        
           else
-
+        
             SRC_REF="${img_name}:${src_tag}"
-
+        
           fi
-
+        
           RESOLVED_SRC_REFS+=("${SRC_REF}")
-
+        
           # ----------------------------------------------------------
           # Build target image reference
           # ----------------------------------------------------------
-
+        
           tgt_img_name="${EXPLICIT_TGT_IMAGE:-${img_name}}"
-
+        
           tgt_img_name="$(
             normalize_image_component "${tgt_img_name}"
           )"
-
+        
           tgt_tag_str="${EXPLICIT_TGT_TAG:-${src_tag}}"
-
+        
           IFS=',' read -ra TAG_LIST <<< "${tgt_tag_str}"
-
+        
           for raw_tag in "${TAG_LIST[@]}"; do
-
+        
             tag="$(echo "${raw_tag}" | xargs)"
-
+        
             [[ -z "${tag}" ]] && continue
-
+        
             # --------------------------------------------------------
             # Build target reference
             # --------------------------------------------------------
-
+        
             if [[ -n "${TGT_REGISTRY}" &&
                   -n "${TGT_NAMESPACE}" ]]; then
-
+        
               TGT_REF="${TGT_REGISTRY}/${TGT_NAMESPACE}/${tgt_img_name}:${tag}"
-
+        
             elif [[ -n "${TGT_REGISTRY}" ]]; then
-
+        
               TGT_REF="${TGT_REGISTRY}/${tgt_img_name}:${tag}"
-
+        
             elif [[ -n "${TGT_NAMESPACE}" ]]; then
-
+        
               TGT_REF="${TGT_NAMESPACE}/${tgt_img_name}:${tag}"
-
+        
             else
-
+        
               TGT_REF="${tgt_img_name}:${tag}"
-
+        
             fi
-
+        
             # --------------------------------------------------------
             # Display sync information
             # --------------------------------------------------------
-
+        
             echo "============================================================"
             echo "Syncing Docker Image"
             echo "Source : ${SRC_REF}"
             echo "Target : ${TGT_REF}"
             echo "============================================================"
-
-            # --------------------------------------------------------
-            # Skopeo
-            # --------------------------------------------------------
-
-            if [[ "${COPY_TOOL}" == "skopeo" ]]; then
-
-              echo "Using skopeo copy (multi-arch preservation)..."
-              echo "Using auth file: ${DOCKER_AUTH_FILE}"
-
-              skopeo copy \
-                --multi-arch all \
-                --authfile "${DOCKER_AUTH_FILE}" \
-                "docker://${SRC_REF}" \
-                "docker://${TGT_REF}"
-
+        
             # --------------------------------------------------------
             # Crane
             # --------------------------------------------------------
-
-            elif [[ "${COPY_TOOL}" == "crane" ]]; then
-
-              echo "Using crane copy..."
-
-              crane copy \
-                "${SRC_REF}" \
-                "${TGT_REF}"
-
-            # --------------------------------------------------------
-            # Regctl
-            # --------------------------------------------------------
-
-            elif [[ "${COPY_TOOL}" == "regctl" ]]; then
-
-              echo "Using regctl image copy..."
-
-              regctl image copy \
-                "${SRC_REF}" \
-                "${TGT_REF}"
-
-            # --------------------------------------------------------
-            # Docker fallback
-            # --------------------------------------------------------
-
-            else
-
-              echo "Falling back to Docker CLI (pull/tag/push)..."
-
-              docker pull "${SRC_REF}"
-
-              docker tag \
-                "${SRC_REF}" \
-                "${TGT_REF}"
-
-              docker push "${TGT_REF}"
-
-              docker rmi "${TGT_REF}" || true
-
-            fi
-
+        
+            echo "Using crane copy..."
+            echo "Crane will preserve the multi-platform image index."
+        
+            crane copy \
+              "${SRC_REF}" \
+              "${TGT_REF}"
+        
             # --------------------------------------------------------
             # Success
             # --------------------------------------------------------
-
+        
             echo "✓ Synced successfully: ${TGT_REF}"
             echo ""
-
+        
             SYNCED_IMAGES+=("${TGT_REF}")
-
+        
           done
         done
-
+        
         # ------------------------------------------------------------
         # Validate results
         # ------------------------------------------------------------
-
+        
         if [[ "${#SYNCED_IMAGES[@]}" -eq 0 ]]; then
           echo "::error::No target images were processed"
           exit 1
         fi
-
+        
         # ------------------------------------------------------------
         # Set outputs
         # ------------------------------------------------------------
-
+        
         SRC_OUTPUT="$(IFS=','; echo "${RESOLVED_SRC_REFS[*]}")"
         SYNCED_OUTPUT="$(IFS=','; echo "${SYNCED_IMAGES[*]}")"
-
+        
         echo "source_image=${SRC_OUTPUT}" >> "${GITHUB_OUTPUT}"
         echo "synced_images=${SYNCED_OUTPUT}" >> "${GITHUB_OUTPUT}"
-
+        
         echo "============================================================"
         echo "Docker Image Sync Complete"
         echo "Source : ${SRC_OUTPUT}"
