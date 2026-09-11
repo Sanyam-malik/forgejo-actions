@@ -10,7 +10,7 @@ description: >
   authentication required" on the copy step even though `docker login`
   reports success (login only validates the basic ping, not per-package pull
   scope). If that happens, pass a personal access token with package read
-  permission via the `source_token` input instead of changing workflow-level
+  permission via the `registry_token` input instead of changing workflow-level
   `permissions:`.
 
 inputs:
@@ -19,7 +19,7 @@ inputs:
     required: false
     default: "latest"
 
-  source_token:
+  registry_token:
     description: >
       Token used to authenticate against the Forgejo source registry.
       Defaults to the auto-issued job token (github.token), which may lack
@@ -77,7 +77,7 @@ runs:
 
       env:
         SRC_TAG_INPUT: ${{ inputs.source_tag }}
-        SRC_TOKEN_INPUT: ${{ inputs.source_token }}
+        SRC_TOKEN_INPUT: ${{ inputs.registry_token }}
         TGT_REGISTRY_INPUT: ${{ inputs.registry }}
         TGT_USERNAME_INPUT: ${{ inputs.username }}
         TGT_TOKEN_INPUT: ${{ inputs.token }}
