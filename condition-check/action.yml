@@ -40,13 +40,11 @@ runs:
           # The value matches the regex.
           echo "Result      : MATCH"
           echo "Status      : Condition satisfied"
-          echo "Output      : matches=true"
           echo "matches=true" >> "$GITHUB_OUTPUT"
         else
           # The value does not match the regex.
           echo "Result      : NO MATCH"
           echo "Status      : Condition not satisfied"
-          echo "Output      : matches=false"
           echo "matches=false" >> "$GITHUB_OUTPUT"
         fi
 
