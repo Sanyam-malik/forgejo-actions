@@ -24,6 +24,11 @@ inputs:
     required: false
     default: Dockerfile
 
+  platform:
+    description: Target platform (e.g. linux/amd64). Defaults to the runner's native architecture, preventing an accidental fall-through to an emulated platform.
+    required: false
+    default: ""
+
   build_args:
     description: Additional docker build arguments (e.g. --build-arg FOO=bar)
     required: false
@@ -47,6 +52,7 @@ runs:
         IMAGE_INPUT: ${{ inputs.image }}
         TAG: ${{ inputs.tag }}
         DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
+        PLATFORM_INPUT: ${{ inputs.platform }}
         BUILD_ARGS: ${{ inputs.build_args }}
       run: |
         set -euo pipefail
@@ -68,6 +74,58 @@ runs:
         IMAGE_NAME="${IMAGE_NAME%/}"
 
         DOCKERFILE="${DOCKERFILE_INPUT}"
+
+        # ------------------------------------------------------------
+        # Resolve target platform
+        #
+        # If not explicitly provided, pin to the runner's real native
+        # architecture. This is required: without an explicit
+        # --platform, `docker buildx build` resolves a platform from
+        # whatever builder is currently active. If QEMU/binfmt has been
+        # registered on this host (e.g. by a prior or parallel
+        # multi-arch job), the active builder can be a multi-platform
+        # one that advertises emulated platforms (arm64, riscv64, etc).
+        # Without pinning, buildx can silently pick one of those
+        # instead of the host's real architecture, and anything that
+        # needs to execute native code during the build (like GraalVM
+        # native-image) will fail under emulation.
+        # ------------------------------------------------------------
+        PLATFORM="${PLATFORM_INPUT}"
+
+        if [[ -z "${PLATFORM}" ]]; then
+          HOST_ARCH="$(uname -m)"
+
+          case "${HOST_ARCH}" in
+            x86_64|amd64)
+              PLATFORM="linux/amd64"
+              ;;
+            aarch64|arm64)
+              PLATFORM="linux/arm64"
+              ;;
+            armv7l|armv7)
+              PLATFORM="linux/arm/v7"
+              ;;
+            armv6l)
+              PLATFORM="linux/arm/v6"
+              ;;
+            i386|i686)
+              PLATFORM="linux/386"
+              ;;
+            ppc64le)
+              PLATFORM="linux/ppc64le"
+              ;;
+            s390x)
+              PLATFORM="linux/s390x"
+              ;;
+            riscv64)
+              PLATFORM="linux/riscv64"
+              ;;
+            *)
+              echo "::error::Could not map host architecture '${HOST_ARCH}' to a platform. Set the 'platform' input explicitly."
+              exit 1
+              ;;
+          esac
+        fi
 
         # ------------------------------------------------------------
         # Validate inputs
@@ -114,6 +172,8 @@ runs:
         echo "  ${IMAGE_REF}"
         echo "Dockerfile:"
         echo "  ${DOCKERFILE}"
+        echo "Platform:"
+        echo "  ${PLATFORM}"
 
         # ------------------------------------------------------------
         # Derive OCI tarball filename from image reference
@@ -230,6 +290,7 @@ runs:
           docker buildx build
           --tag "${IMAGE_REF}"
           --file "${DOCKERFILE}"
+          --platform "${PLATFORM}"
           --output "type=oci,dest=${OUTPUT}"
         )
 
