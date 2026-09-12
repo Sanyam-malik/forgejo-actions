@@ -325,6 +325,24 @@ Clone repositories supporting shallow clones, full history, and authentication t
 
 ---
 
+### `condition-check`
+
+Check whether a value matches a regular expression.
+
+**Features:**
+* Evaluates input string against a regular expression pattern using Bash regex.
+* Outputs `matches` (`true` or `false`).
+
+```yaml
+- uses: actions/forgejo/condition-check@v1
+  id: check
+  with:
+    value: "v1.2.3"
+    regex: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+```
+
+---
+
 ### `utils/detect-pkg-cache`
 
 Automatically detect `pkg-cache` host domain from runner environment.
@@ -363,7 +381,8 @@ Available skills in `.agents/skills/` and `skills/`:
 actions/
  ├ build-angular
  ├ build-hugo
-├ container-scan
+ ├ condition-check
+ ├ container-scan
 ├ deploy-pages
 ├ docker-build
 ├ docker-login

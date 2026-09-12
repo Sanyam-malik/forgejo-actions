@@ -13,6 +13,7 @@ This repository contains reusable **composite actions** designed for **Forgejo, 
 forgejo-actions/
 ├── build-angular/            # Angular build composite action
 ├── build-hugo/               # Hugo site build action
+├── condition-check/          # Value regex pattern matching action
 ├── repository-sync/          # Branch/dir sync utility action
 ├── container-scan/           # Container image scanning action
 ├── deploy-pages/             # Git pages deployment action

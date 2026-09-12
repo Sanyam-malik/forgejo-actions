@@ -1,0 +1,53 @@
+name: Condition Check
+description: Check whether a value matches a regular expression
+
+inputs:
+  value:
+    description: Value to evaluate against the regular expression
+    required: true
+
+  regex:
+    description: Regular expression used to validate the input value
+    required: true
+
+outputs:
+  matches:
+    description: Returns 'true' if the value matches the regex, otherwise 'false'
+    value: ${{ steps.condition-check.outputs.matches }}
+
+runs:
+  using: composite
+  steps:
+    # Evaluate the input value against the supplied regular expression.
+    - name: Check condition
+      id: condition-check
+      shell: bash
+      env:
+        VALUE: ${{ inputs.value }}
+        REGEX: ${{ inputs.regex }}
+      run: |
+        set -euo pipefail
+
+        echo "============================================"
+        echo "             Condition Check"
+        echo "============================================"
+        echo "Input value : $VALUE"
+        echo "Regex       : $REGEX"
+        echo "--------------------------------------------"
+
+        # Use Bash's regex matching operator to evaluate the condition.
+        if [[ "$VALUE" =~ $REGEX ]]; then
+          # The value matches the regex.
+          echo "Result      : MATCH"
+          echo "Status      : Condition satisfied"
+          echo "Output      : matches=true"
+          echo "matches=true" >> "$GITHUB_OUTPUT"
+        else
+          # The value does not match the regex.
+          echo "Result      : NO MATCH"
+          echo "Status      : Condition not satisfied"
+          echo "Output      : matches=false"
+          echo "matches=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "============================================"
