@@ -39,6 +39,18 @@ inputs:
     required: false
     default: "true"
 
+  disable_process_sandbox:
+    description: >
+      Create the Buildx builder with BuildKit's process sandbox
+      disabled (--oci-worker-no-process-sandbox). Required for tools
+      that write out and directly execute native helper binaries
+      during the build (e.g. GraalVM native-image), which BuildKit's
+      default process sandbox blocks. Only enable this for builds that
+      specifically need it; leave disabled for normal builds so they
+      keep the default hardened sandbox.
+    required: false
+    default: "false"
+
 outputs:
   image:
     description: Fully resolved image reference embedded in the archive (registry/namespace/image:tag)
@@ -64,6 +76,7 @@ runs:
         BUILD_ARGS: ${{ inputs.build_args }}
         REQUESTED_PLATFORMS: ${{ inputs.platforms }}
         VALIDATE_PLATFORMS: ${{ inputs.validate_platforms }}
+        DISABLE_PROCESS_SANDBOX: ${{ inputs.disable_process_sandbox }}
       run: |
         set -euo pipefail
 
@@ -312,26 +325,50 @@ runs:
 
         # ------------------------------------------------------------
         # Create isolated Buildx builder
+        #
+        # If disable_process_sandbox is enabled, the builder is created
+        # with BuildKit's process sandbox turned off
+        # (--oci-worker-no-process-sandbox). BuildKit's default OCI
+        # worker sandboxes each RUN step's process beyond normal
+        # container privileges; some tools need to write out a native
+        # helper binary during the build and directly execute it (e.g.
+        # GraalVM native-image, which does this to compute C struct
+        # layout offsets), and that write-then-exec pattern is blocked
+        # by the default sandbox even when the container itself has
+        # ordinary permissions, producing errors like:
+        #   "Unable to run '.../SomeDirectives' to compute offsets"
+        #
+        # This is a real (if narrow) reduction in build isolation, so
+        # it stays strictly opt-in via the disable_process_sandbox
+        # input; leave it disabled for builds that don't need it.
         # ------------------------------------------------------------
         echo "============================================================"
         echo "Docker Multi Image Build"
         echo "============================================================"
-        echo "Image reference     : ${IMAGE}"
-        echo "Dockerfile          : ${DOCKERFILE}"
-        echo "Requested platforms : ${REQUESTED_PLATFORMS}"
-        echo "Normalized platforms: ${NORMALIZED_PLATFORMS[*]}"
-        echo "OCI tarball         : ${OUTPUT_PATH}"
-        echo "Buildx builder      : ${BUILDER_NAME}"
+        echo "Image reference       : ${IMAGE}"
+        echo "Dockerfile            : ${DOCKERFILE}"
+        echo "Requested platforms   : ${REQUESTED_PLATFORMS}"
+        echo "Normalized platforms  : ${NORMALIZED_PLATFORMS[*]}"
+        echo "OCI tarball           : ${OUTPUT_PATH}"
+        echo "Buildx builder        : ${BUILDER_NAME}"
+        echo "Process sandbox off   : ${DISABLE_PROCESS_SANDBOX}"
         echo "============================================================"
         echo ""
 
         echo "Creating Buildx builder..."
 
-        docker buildx create \
-          --name "${BUILDER_NAME}" \
-          --use \
-          --driver docker-container \
-          >/dev/null
+        CREATE_COMMAND=(
+          docker buildx create
+          --name "${BUILDER_NAME}"
+          --use
+          --driver docker-container
+        )
+
+        if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" ]]; then
+          CREATE_COMMAND+=( --buildkitd-flags '--oci-worker-no-process-sandbox' )
+        fi
+
+        "${CREATE_COMMAND[@]}" >/dev/null
 
         echo "Buildx builder created: ${BUILDER_NAME}"
         echo ""

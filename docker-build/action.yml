@@ -29,6 +29,18 @@ inputs:
     required: false
     default: ""
 
+  disable_process_sandbox:
+    description: >
+      Create and use a dedicated buildx builder with BuildKit's
+      process sandbox disabled (--oci-worker-no-process-sandbox).
+      Required for tools that write out and directly execute native
+      helper binaries during the build (e.g. GraalVM native-image),
+      which BuildKit's default process sandbox blocks. Only enable
+      this for builds that specifically need it; leave disabled for
+      normal builds so they keep the default hardened sandbox.
+    required: false
+    default: "false"
+
   build_args:
     description: Additional docker build arguments (e.g. --build-arg FOO=bar)
     required: false
@@ -53,6 +65,7 @@ runs:
         TAG: ${{ inputs.tag }}
         DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
         PLATFORM_INPUT: ${{ inputs.platform }}
+        DISABLE_PROCESS_SANDBOX: ${{ inputs.disable_process_sandbox }}
         BUILD_ARGS: ${{ inputs.build_args }}
       run: |
         set -euo pipefail
@@ -196,6 +209,58 @@ runs:
         echo "  ${OUTPUT}"
 
         # ------------------------------------------------------------
+        # Optional dedicated builder with the BuildKit process sandbox
+        # disabled.
+        #
+        # BuildKit's default OCI worker runs each RUN step's process
+        # inside an additional process-level sandbox on top of normal
+        # container privileges. Some tools need to write out a native
+        # helper binary during the build and directly execute it (e.g.
+        # GraalVM native-image, which does this to compute C struct
+        # layout offsets). BuildKit's process sandbox blocks that
+        # write-then-exec pattern even when the container itself has
+        # ordinary permissions, producing errors like:
+        #   "Unable to run '.../SomeDirectives' to compute offsets"
+        #
+        # --oci-worker-no-process-sandbox disables that extra sandbox
+        # layer. This is a real (if narrow) reduction in build
+        # isolation, so it is strictly opt-in via the
+        # disable_process_sandbox input, and the dedicated builder
+        # used for it is created here rather than mutating whatever
+        # builder is already active, so unrelated builds are
+        # unaffected.
+        # ------------------------------------------------------------
+        BUILDER_ARGS=()
+        CREATED_BUILDER=""
+
+        if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" ]]; then
+          echo ""
+          echo "============================================================"
+          echo "Creating dedicated builder (process sandbox disabled)"
+          echo "============================================================"
+
+          if command -v uuidgen >/dev/null 2>&1; then
+            UUID="$(uuidgen)"
+          elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+            UUID="$(cat /proc/sys/kernel/random/uuid)"
+          else
+            UUID="$(date +%s%N)-${RANDOM}"
+          fi
+
+          CREATED_BUILDER="no_sandbox_${UUID}"
+
+          docker buildx create \
+            --name "${CREATED_BUILDER}" \
+            --driver docker-container \
+            --buildkitd-flags '--oci-worker-no-process-sandbox' \
+            >/dev/null
+
+          echo "Dedicated builder created: ${CREATED_BUILDER}"
+
+          BUILDER_ARGS=( --builder "${CREATED_BUILDER}" )
+        fi
+
+        # ------------------------------------------------------------
         # Buildx cleanup
         #
         # The cleanup runs on both success and failure.
@@ -208,6 +273,16 @@ runs:
           echo "============================================================"
           echo "Docker Buildx cleanup"
           echo "============================================================"
+
+          if [[ -n "${CREATED_BUILDER}" ]] && docker buildx inspect "${CREATED_BUILDER}" >/dev/null 2>&1; then
+            echo "Removing dedicated builder: ${CREATED_BUILDER}"
+
+            docker buildx rm \
+              --force \
+              "${CREATED_BUILDER}" \
+              >/dev/null 2>&1 || \
+              echo "::warning::Failed to remove dedicated builder: ${CREATED_BUILDER}"
+          fi
 
           if docker buildx version >/dev/null 2>&1; then
             echo "Pruning Buildx build cache..."
@@ -293,6 +368,10 @@ runs:
           --platform "${PLATFORM}"
           --output "type=oci,dest=${OUTPUT}"
         )
+
+        if (( ${#BUILDER_ARGS[@]} > 0 )); then
+          BUILD_COMMAND+=( "${BUILDER_ARGS[@]}" )
+        fi
 
         if (( ${#EXTRA_BUILD_ARGS[@]} > 0 )); then
           BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
