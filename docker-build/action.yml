@@ -19,6 +19,11 @@ inputs:
     required: false
     default: latest
 
+  dockerfile:
+    description: Path to the Dockerfile to build
+    required: false
+    default: Dockerfile
+
   build_args:
     description: Additional docker build arguments (e.g. --build-arg FOO=bar)
     required: false
@@ -41,6 +46,7 @@ runs:
         NAMESPACE_INPUT: ${{ inputs.namespace }}
         IMAGE_INPUT: ${{ inputs.image }}
         TAG: ${{ inputs.tag }}
+        DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
         BUILD_ARGS: ${{ inputs.build_args }}
       run: |
         set -euo pipefail
@@ -60,6 +66,8 @@ runs:
         IMAGE_NAME="${IMAGE_INPUT}"
         IMAGE_NAME="${IMAGE_NAME#/}"
         IMAGE_NAME="${IMAGE_NAME%/}"
+
+        DOCKERFILE="${DOCKERFILE_INPUT}"
 
         # ------------------------------------------------------------
         # Validate inputs
@@ -84,6 +92,16 @@ runs:
           exit 1
         fi
 
+        if [[ -z "${DOCKERFILE}" ]]; then
+          echo "::error::dockerfile input is empty"
+          exit 1
+        fi
+
+        if [[ ! -f "${DOCKERFILE}" ]]; then
+          echo "::error::Dockerfile not found at path: ${DOCKERFILE}"
+          exit 1
+        fi
+
         # ------------------------------------------------------------
         # Build image reference
         # ------------------------------------------------------------
@@ -94,6 +112,8 @@ runs:
         echo "============================================================"
         echo "Image reference:"
         echo "  ${IMAGE_REF}"
+        echo "Dockerfile:"
+        echo "  ${DOCKERFILE}"
 
         # ------------------------------------------------------------
         # Derive OCI tarball filename from image reference
@@ -209,6 +229,7 @@ runs:
         BUILD_COMMAND=(
           docker buildx build
           --tag "${IMAGE_REF}"
+          --file "${DOCKERFILE}"
           --output "type=oci,dest=${OUTPUT}"
         )
 
