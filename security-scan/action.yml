@@ -920,3 +920,101 @@ runs:
         fi
 
         echo "Security scan passed."
+
+    # ============================================================
+    # Pull request comment
+    # ============================================================
+    - name: Comment security scan summary on pull request
+      if: always()
+      shell: bash
+      env:
+        API_TOKEN: ${{ github.token }}
+        API_URL: ${{ github.api_url }}
+        SERVER_URL: ${{ github.server_url }}
+        REPOSITORY: ${{ github.repository }}
+        REF_NAME: ${{ github.ref_name }}
+        HEAD_REF: ${{ github.head_ref }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_PATH: ${{ github.event_path }}
+      run: |
+        set -euo pipefail
+
+        SUMMARY="${RUNNER_TEMP}/security-summary.md"
+
+        if [[ -z "${API_TOKEN}" ]]; then
+          echo "::warning::Skipping pull request comment because no API token is available."
+          exit 0
+        fi
+
+        if [[ ! -s "${SUMMARY}" ]]; then
+          echo "::warning::Skipping pull request comment because the security summary is unavailable."
+          exit 0
+        fi
+
+        API_BASE="${API_URL:-}"
+        if [[ -z "${API_BASE}" ]]; then
+          API_BASE="${SERVER_URL%/}/api/v1"
+        fi
+        API_BASE="${API_BASE%/}"
+
+        PR_NUMBER=""
+        if [[ "${EVENT_NAME}" == "pull_request" &&
+              -f "${EVENT_PATH}" ]]; then
+          PR_NUMBER="$(
+            jq -r '.number // empty' "${EVENT_PATH}"
+          )"
+        fi
+
+        if [[ -z "${PR_NUMBER}" ]]; then
+          BRANCH="${HEAD_REF:-${REF_NAME}}"
+          OWNER="${REPOSITORY%%/*}"
+
+          if [[ -z "${BRANCH}" || -z "${OWNER}" ||
+                "${OWNER}" == "${REPOSITORY}" ]]; then
+            echo "No branch context available; skipping pull request comment."
+            exit 0
+          fi
+
+          PULLS_URL="${API_BASE}/repos/${REPOSITORY}/pulls"
+          if ! PULLS_RESPONSE="$(
+            curl -fsS \
+              --retry 2 \
+              -H "Authorization: Bearer ${API_TOKEN}" \
+              -H "Accept: application/json" \
+              --get \
+              --data-urlencode "state=open" \
+              --data-urlencode "head=${OWNER}:${BRANCH}" \
+              "${PULLS_URL}"
+          )"; then
+            echo "::warning::Unable to determine whether branch '${BRANCH}' has an open pull request."
+            exit 0
+          fi
+
+          PR_NUMBER="$(
+            jq -r '.[0].number // empty' <<< "${PULLS_RESPONSE}"
+          )"
+        fi
+
+        if [[ -z "${PR_NUMBER}" ]]; then
+          echo "No open pull request found for the scanned branch."
+          exit 0
+        fi
+
+        COMMENT_BODY="$(
+          jq -Rs '{body: .}' < "${SUMMARY}"
+        )"
+        COMMENTS_URL="${API_BASE}/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments"
+
+        if ! curl -fsS \
+          --retry 2 \
+          -X POST \
+          -H "Authorization: Bearer ${API_TOKEN}" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          --data "${COMMENT_BODY}" \
+          "${COMMENTS_URL}" >/dev/null; then
+          echo "::warning::Unable to post the security scan summary to pull request #${PR_NUMBER}."
+          exit 0
+        fi
+
+        echo "Posted security scan summary to pull request #${PR_NUMBER}."

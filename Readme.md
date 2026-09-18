@@ -282,6 +282,10 @@ Run comprehensive secret detection (Gitleaks) and dependency vulnerability scans
     fail_on_vulnerabilities: true
 ```
 
+When the scanned branch has an open pull request, the action posts the security
+scan summary as a pull request comment. The workflow token must have permission
+to write pull request or issue comments.
+
 ---
 
 ### `container-scan`
