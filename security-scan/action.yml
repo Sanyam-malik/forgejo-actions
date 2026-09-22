@@ -801,8 +801,12 @@ runs:
         {
           echo "## 🔐 Security Scan Summary"
           echo ""
+          
+          if [ -n "${SCAN_PATH}" ] && [ "${SCAN_PATH}" != "." ]; then
           echo "**Scan path:** \`${SCAN_PATH}\`"
           echo ""
+          fi
+          
           echo "| Scanner | Severity | Issue | Location | Package | Installed | Fixed |"
           echo "|---|---|---|---|---|---|---|"
         } > "${SUMMARY}"
