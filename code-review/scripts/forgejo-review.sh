@@ -81,6 +81,20 @@ fi
 echo "Pull request: #${PR_NUMBER}"
 
 # ------------------------------------------------------------
+# Resolve curl
+# ------------------------------------------------------------
+
+CURL="$(command -v curl || true)"
+
+if [ -z "$CURL" ]; then
+    echo "ERROR: curl is required by the Forgejo reporter but was not found."
+    echo "PATH=${PATH}"
+    exit 1
+fi
+
+echo "curl       : ${CURL}"
+
+# ------------------------------------------------------------
 # API helper
 # ------------------------------------------------------------
 
@@ -91,7 +105,7 @@ forgejo_api() {
 
     shift 2
 
-    curl \
+    "$CURL" \
         --fail \
         --silent \
         --show-error \
@@ -158,6 +172,7 @@ forgejo_api \
 
 echo
 echo "Changed files:"
+
 python3 - .forgejo-pr-files.json <<'PY'
 import json
 import sys
