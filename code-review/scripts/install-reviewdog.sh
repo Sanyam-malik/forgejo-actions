@@ -32,48 +32,36 @@ else
 fi
 
 # ============================================================
-# Resolve latest
+# Resolve latest version
 # ============================================================
 
 if [ "$VERSION" = "latest" ]; then
 
     echo "Resolving latest reviewdog version..."
 
-    if [ -n "$PKG_CACHE" ]; then
+    LATEST_URL="${BASE_URL}/releases/latest"
 
-        # The pkg-cache is expected to provide the same
-        # /releases/latest endpoint as the upstream mirror.
-        VERSION="$(
-            curl \
-                --fail \
-                --silent \
-                --show-error \
-                --location \
-                -o /dev/null \
-                -w '%{url_effective}' \
-                "${BASE_URL}/releases/latest" |
-            grep -oE '/tag/v[0-9]+\.[0-9]+\.[0-9]+$' |
-            sed 's#.*/tag/v##'
-        )
+    EFFECTIVE_URL="$(
+        curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --output /dev/null \
+            --write-out '%{url_effective}' \
+            "$LATEST_URL"
+    )"
 
-    else
+    echo "Latest release URL: $EFFECTIVE_URL"
 
-        VERSION="$(
-            curl \
-                --fail \
-                --silent \
-                --show-error \
-                --location \
-                https://api.github.com/repos/reviewdog/reviewdog/releases/latest |
-            grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' |
-            head -n 1 |
-            sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)".*/\1/'
-        )
-
-    fi
+    VERSION="$(
+        printf '%s\n' "$EFFECTIVE_URL" |
+        sed -n 's#.*/tag/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*#\1#p'
+    )"
 
     if [ -z "$VERSION" ]; then
         echo "ERROR: Failed to resolve latest reviewdog version"
+        echo "URL returned: $EFFECTIVE_URL"
         exit 1
     fi
 
@@ -99,7 +87,7 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # ============================================================
-# Platform
+# Detect platform
 # ============================================================
 
 OS="$(uname -s)"
@@ -141,9 +129,13 @@ ARCHIVE="reviewdog_${VERSION}_${OS}_${ARCH}.tar.gz"
 DOWNLOAD_URL="${BASE_URL}/releases/download/v${VERSION}/${ARCHIVE}"
 
 echo
-echo "Reviewdog version : $VERSION"
-echo "Platform          : $OS/$ARCH"
-echo "Download URL      : $DOWNLOAD_URL"
+echo "========================================"
+echo "Installing reviewdog"
+echo "========================================"
+echo "Version : $VERSION"
+echo "Platform: $OS/$ARCH"
+echo "Archive : $ARCHIVE"
+echo "URL     : $DOWNLOAD_URL"
 echo
 
 INSTALL_DIR="${RUNNER_TEMP:-/tmp}/reviewdog-bin"
@@ -174,7 +166,7 @@ chmod +x "$INSTALL_DIR/reviewdog"
 echo "$INSTALL_DIR" >> "$GITHUB_PATH"
 
 echo
-echo "Reviewdog installed at:"
+echo "Reviewdog installed:"
 echo "$INSTALL_DIR/reviewdog"
 echo
 
