@@ -1,0 +1,195 @@
+name: Setup Python
+description: Install Python and configure PYTHON_HOME on multiple Linux distributions
+
+inputs:
+  python_version:
+    description: Python version to install (for example 3, 3.11, 3.12)
+    required: false
+    default: "3"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Python
+      shell: bash
+      run: |
+        set -e
+
+        PYTHON_VERSION="${{ inputs.python_version }}"
+
+        if ! [[ "$PYTHON_VERSION" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+          echo "Invalid Python version: $PYTHON_VERSION"
+          echo "Expected format: 3, 3.11, 3.12, etc."
+          exit 1
+        fi
+
+        PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
+
+        if [[ "$PYTHON_VERSION" == *.* ]]; then
+          PYTHON_MINOR="${PYTHON_VERSION#*.}"
+          PYTHON_PACKAGE_VERSION="${PYTHON_MAJOR}.${PYTHON_MINOR}"
+        else
+          PYTHON_MINOR=""
+          PYTHON_PACKAGE_VERSION="${PYTHON_MAJOR}"
+        fi
+
+        echo "Requested Python version: $PYTHON_VERSION"
+
+        # -------------------------------------------------------
+        # Determine Python executable/package name
+        # -------------------------------------------------------
+
+        if [ -n "$PYTHON_MINOR" ]; then
+          PYTHON_BIN="python${PYTHON_PACKAGE_VERSION}"
+        else
+          PYTHON_BIN="python${PYTHON_MAJOR}"
+        fi
+
+        # -------------------------------------------------------
+        # APT
+        # -------------------------------------------------------
+
+        if command -v apt-get >/dev/null 2>&1; then
+          echo "Detected APT system"
+
+          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            echo "$PYTHON_BIN already installed"
+
+          else
+            sudo apt-get update
+
+            if [ -n "$PYTHON_MINOR" ]; then
+              sudo apt-get install -y \
+                "python${PYTHON_PACKAGE_VERSION}" \
+                "python${PYTHON_PACKAGE_VERSION}-venv" \
+                curl \
+                unzip
+            else
+              sudo apt-get install -y \
+                "python${PYTHON_MAJOR}" \
+                "python${PYTHON_MAJOR}-venv" \
+                curl \
+                unzip
+            fi
+          fi
+
+        # -------------------------------------------------------
+        # DNF
+        # -------------------------------------------------------
+
+        elif command -v dnf >/dev/null 2>&1; then
+          echo "Detected DNF system"
+
+          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            echo "$PYTHON_BIN already installed"
+
+          elif [ -n "$PYTHON_MINOR" ]; then
+            sudo dnf install -y \
+              "python${PYTHON_PACKAGE_VERSION}" \
+              curl \
+              unzip
+
+          else
+            sudo dnf install -y \
+              "python${PYTHON_MAJOR}" \
+              curl \
+              unzip
+          fi
+
+        # -------------------------------------------------------
+        # YUM
+        # -------------------------------------------------------
+
+        elif command -v yum >/dev/null 2>&1; then
+          echo "Detected YUM system"
+
+          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            echo "$PYTHON_BIN already installed"
+
+          elif [ -n "$PYTHON_MINOR" ]; then
+            sudo yum install -y \
+              "python${PYTHON_PACKAGE_VERSION}" \
+              curl \
+              unzip
+
+          else
+            sudo yum install -y \
+              "python${PYTHON_MAJOR}" \
+              curl \
+              unzip
+          fi
+
+        # -------------------------------------------------------
+        # APK / Alpine
+        # -------------------------------------------------------
+
+        elif command -v apk >/dev/null 2>&1; then
+          echo "Detected Alpine system"
+
+          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            echo "$PYTHON_BIN already installed"
+
+          elif [ -n "$PYTHON_MINOR" ]; then
+            sudo apk add --no-cache \
+              "python${PYTHON_PACKAGE_VERSION}" \
+              curl \
+              unzip
+
+          else
+            sudo apk add --no-cache \
+              "python${PYTHON_MAJOR}" \
+              curl \
+              unzip
+          fi
+
+        # -------------------------------------------------------
+        # Zypper
+        # -------------------------------------------------------
+
+        elif command -v zypper >/dev/null 2>&1; then
+          echo "Detected Zypper system"
+
+          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            echo "$PYTHON_BIN already installed"
+
+          elif [ -n "$PYTHON_MINOR" ]; then
+            sudo zypper install -y \
+              "python${PYTHON_PACKAGE_VERSION}" \
+              curl \
+              unzip
+
+          else
+            sudo zypper install -y \
+              "python${PYTHON_MAJOR}" \
+              curl \
+              unzip
+          fi
+
+        else
+          echo "Unsupported distribution"
+          exit 1
+        fi
+
+        # -------------------------------------------------------
+        # Verify installation
+        # -------------------------------------------------------
+
+        if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+          echo "ERROR: $PYTHON_BIN was not found after installation"
+          exit 1
+        fi
+
+        PYTHON_BIN="$(command -v "$PYTHON_BIN")"
+
+        PYTHON_HOME="$(dirname "$(dirname "$(readlink -f "$PYTHON_BIN")")")"
+
+        echo "PYTHON_HOME=$PYTHON_HOME" >> "$GITHUB_ENV"
+        echo "$PYTHON_HOME/bin" >> "$GITHUB_PATH"
+
+        echo
+        echo "Python installed successfully"
+        echo "Requested version: $PYTHON_VERSION"
+        echo "Python executable: $PYTHON_BIN"
+        echo "PYTHON_HOME: $PYTHON_HOME"
+
+        "$PYTHON_BIN" --version
