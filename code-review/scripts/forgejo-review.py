@@ -5,42 +5,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-
-# ============================================================
-# Arguments
-# ============================================================
-
-if len(sys.argv) != 9:
-    print(
-        "Usage: forgejo-review.py "
-        "<results-file> "
-        "<pr-files-json> "
-        "<filter-mode> "
-        "<api-url> "
-        "<owner> "
-        "<repo> "
-        "<pr-number> "
-        "<token>",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-RESULT_FILE = Path(sys.argv[1])
-PR_FILES_FILE = Path(sys.argv[2])
-FILTER_MODE = sys.argv[3]
-API_URL = sys.argv[4].rstrip("/")
-OWNER = sys.argv[5]
-REPO = sys.argv[6]
-PR_NUMBER = sys.argv[7]
-TOKEN = sys.argv[8]
-
-
-# ============================================================
-# Validation
-# ============================================================
 
 VALID_FILTERS = {
     "changed_files",
@@ -50,130 +15,86 @@ VALID_FILTERS = {
     "nofilter",
 }
 
-if FILTER_MODE not in VALID_FILTERS:
-    print(
-        f"Unsupported filter mode: {FILTER_MODE}",
-        file=sys.stderr,
-    )
+CHANGED_FILE_STATUSES = {
+    "added",
+    "modified",
+    "renamed",
+    "deleted",
+}
+
+
+def die(message):
+    print(f"ERROR: {message}")
     sys.exit(1)
 
 
-# ============================================================
-# Load files
-# ============================================================
-
-if not RESULT_FILE.exists():
-    print(
-        f"ERROR: Reviewdog result file does not exist: {RESULT_FILE}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-if not PR_FILES_FILE.exists():
-    print(
-        f"ERROR: PR files file does not exist: {PR_FILES_FILE}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        die(f"Failed to read JSON file: {exc}")
 
 
-with RESULT_FILE.open("r", encoding="utf-8", errors="replace") as f:
-    reviewdog_output = f.read()
+def normalize_status(item):
+    status = str(item.get("status", "")).lower().strip()
+
+    if status:
+        return status
+
+    # Forgejo/Gitea responses can expose the change through fields
+    # such as additions/deletions/changes without an explicit status.
+    additions = item.get("additions", 0) or 0
+    deletions = item.get("deletions", 0) or 0
+
+    if additions > 0 and deletions == 0:
+        return "added"
+
+    if deletions > 0 and additions == 0:
+        return "deleted"
+
+    if additions > 0 or deletions > 0:
+        return "modified"
+
+    return "modified"
 
 
-with PR_FILES_FILE.open("r", encoding="utf-8") as f:
-    changed_files = json.load(f)
+def build_changed_files(pr_files):
+    changed = {}
+
+    for item in pr_files:
+        filename = item.get("filename")
+
+        if not filename:
+            continue
+
+        changed[filename] = {
+            "status": normalize_status(item),
+            "previous_filename": item.get("previous_filename"),
+        }
+
+    return changed
 
 
-if not isinstance(changed_files, list):
-    print(
-        "ERROR: PR files response is not a JSON array.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-# ============================================================
-# Helpers
-# ============================================================
-
-def normalize_path(path):
-    """Normalize a repository path."""
-
-    if not path:
-        return ""
-
-    path = path.strip()
-
-    if path.startswith("./"):
-        path = path[2:]
-
-    path = path.replace("\\", "/")
-
-    return path
-
-
-def normalize_status(status):
-    """Normalize Forgejo file status."""
-
-    if not status:
-        return ""
-
-    return str(status).strip().lower()
-
-
-def is_deleted_file(item):
-    return normalize_status(item.get("status")) == "deleted"
-
-
-def is_reviewable_changed_file(item):
-    """
-    Files that belong to the PR's changed-file scope.
-
-    We intentionally include deleted files because their changes
-    are still part of the PR review.
-    """
-
-    return normalize_status(item.get("status")) in {
-        "added",
-        "modified",
-        "renamed",
-        "deleted",
-    }
-
-
-def get_file_path(item):
-    """
-    Get the current repository path.
-
-    Forgejo normally exposes `filename`. For renamed files,
-    `previous_filename` contains the old path.
-    """
-
-    filename = normalize_path(item.get("filename"))
-
-    if filename:
-        return filename
-
-    return normalize_path(item.get("previous_filename"))
-
-
-# ============================================================
-# Parse reviewdog findings
-# ============================================================
-
-def parse_finding(line):
+def parse_reviewdog_line(line):
     """
     Parse common reviewdog local reporter formats.
 
     Supported examples:
 
-        file:line:column: message
-        file:line: message
-        file(line,column): message
-        file(line): message
+        file.go:10:5: message
+        file.go:10: message
+        file.go:10 message
 
-    The parser intentionally keeps the message intact.
+    Returns:
+        {
+            "path": str,
+            "line": int,
+            "column": int|None,
+            "message": str
+        }
+
+    or None.
     """
 
     line = line.rstrip("\n")
@@ -181,580 +102,361 @@ def parse_finding(line):
     if not line.strip():
         return None
 
-    # --------------------------------------------------------
     # file:line:column: message
-    # --------------------------------------------------------
-
     match = re.match(
-        r"^(.*?):(\d+):(\d+):\s*(.*)$",
+        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):\s*(?P<message>.+)$",
         line,
     )
 
     if match:
-        path = normalize_path(match.group(1))
-        line_number = int(match.group(2))
-        column = int(match.group(3))
-        message = match.group(4).strip()
-
         return {
-            "file": path,
-            "line": line_number,
-            "column": column,
-            "message": message,
+            "path": match.group("path"),
+            "line": int(match.group("line")),
+            "column": int(match.group("column")),
+            "message": match.group("message").strip(),
         }
 
-    # --------------------------------------------------------
     # file:line: message
-    # --------------------------------------------------------
-
     match = re.match(
-        r"^(.*?):(\d+):\s*(.*)$",
+        r"^(?P<path>.+?):(?P<line>\d+):\s*(?P<message>.+)$",
         line,
     )
 
     if match:
-        path = normalize_path(match.group(1))
-        line_number = int(match.group(2))
-        message = match.group(3).strip()
-
         return {
-            "file": path,
-            "line": line_number,
+            "path": match.group("path"),
+            "line": int(match.group("line")),
             "column": None,
-            "message": message,
+            "message": match.group("message").strip(),
         }
 
-    # --------------------------------------------------------
-    # file(line,column): message
-    # --------------------------------------------------------
-
+    # file:line message
     match = re.match(
-        r"^(.*?)\((\d+),(\d+)\):\s*(.*)$",
+        r"^(?P<path>.+?):(?P<line>\d+)\s+(?P<message>.+)$",
         line,
     )
 
     if match:
-        path = normalize_path(match.group(1))
-        line_number = int(match.group(2))
-        column = int(match.group(3))
-        message = match.group(4).strip()
-
         return {
-            "file": path,
-            "line": line_number,
-            "column": column,
-            "message": message,
-        }
-
-    # --------------------------------------------------------
-    # file(line): message
-    # --------------------------------------------------------
-
-    match = re.match(
-        r"^(.*?)\((\d+)\):\s*(.*)$",
-        line,
-    )
-
-    if match:
-        path = normalize_path(match.group(1))
-        line_number = int(match.group(2))
-        message = match.group(3).strip()
-
-        return {
-            "file": path,
-            "line": line_number,
+            "path": match.group("path"),
+            "line": int(match.group("line")),
             "column": None,
-            "message": message,
+            "message": match.group("message").strip(),
         }
 
     return None
 
 
-findings = []
+def parse_findings(result_file):
+    findings = []
 
-for line in reviewdog_output.splitlines():
-    finding = parse_finding(line)
+    with open(result_file, "r", encoding="utf-8", errors="replace") as f:
+        for raw_line in f:
+            finding = parse_reviewdog_line(raw_line)
 
-    if finding is not None:
-        findings.append(finding)
+            if finding is not None:
+                findings.append(finding)
 
-
-print(f"Parsed findings: {len(findings)}")
-print(f"Changed files: {len(changed_files)}")
-
-
-# ============================================================
-# Build changed-file indexes
-# ============================================================
-
-changed_file_map = {}
-
-for item in changed_files:
-    path = get_file_path(item)
-
-    if not path:
-        continue
-
-    changed_file_map[path] = item
+    return findings
 
 
-changed_paths = set(changed_file_map.keys())
+def normalize_path(path):
+    path = path.strip()
+
+    if path.startswith("./"):
+        path = path[2:]
+
+    return path
 
 
-# ============================================================
-# Parse patches
-# ============================================================
+def finding_matches_file(finding, changed_files):
+    path = normalize_path(finding["path"])
 
-def parse_patch(patch):
-    """
-    Parse a unified diff and return:
+    if path in changed_files:
+        return path
 
-      added_lines
-      changed_context_lines
+    # Some linters output ./path while Forgejo returns path.
+    for changed_path in changed_files:
+        if normalize_path(changed_path) == path:
+            return changed_path
 
-    `added_lines` contains current/right-side line numbers.
+    return None
 
-    `changed_context_lines` contains lines that are part of
-    a changed hunk, including context around additions.
-    """
 
-    added_lines = set()
-    context_lines = set()
+def filter_findings(findings, changed_files, filter_mode):
+    if filter_mode == "nofilter":
+        return findings
 
-    if not patch:
-        return added_lines, context_lines
+    filtered = []
 
-    current_line = None
+    for finding in findings:
+        matched_path = finding_matches_file(finding, changed_files)
 
-    for raw_line in patch.splitlines():
+        if matched_path is None:
+            continue
 
-        # ----------------------------------------------------
-        # Hunk header
-        #
-        # @@ -old,count +new,count @@
-        # ----------------------------------------------------
+        file_info = changed_files[matched_path]
+        status = file_info["status"]
 
-        match = re.match(
-            r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@",
-            raw_line,
+        if filter_mode in {"changed_files", "file"}:
+            if status not in CHANGED_FILE_STATUSES:
+                continue
+
+            finding["path"] = matched_path
+            finding["_status"] = status
+            filtered.append(finding)
+            continue
+
+        if filter_mode == "added":
+            # Preserve the old behaviour: only findings belonging to
+            # newly-added files are considered.
+            if status != "added":
+                continue
+
+            finding["path"] = matched_path
+            finding["_status"] = status
+            filtered.append(finding)
+            continue
+
+        if filter_mode == "diff_context":
+            # The custom reporter does not have reviewdog's parsed diff
+            # information here. Treat the changed-file set as the
+            # available scope.
+            finding["path"] = matched_path
+            finding["_status"] = status
+            filtered.append(finding)
+            continue
+
+    return filtered
+
+
+def deduplicate_findings(findings):
+    seen = set()
+    result = []
+
+    for finding in findings:
+        key = (
+            normalize_path(finding["path"]),
+            finding.get("line"),
+            finding.get("column"),
+            finding.get("message"),
         )
 
-        if match:
-            current_line = int(match.group(1))
+        if key in seen:
             continue
 
-        if current_line is None:
-            continue
-
-        # ----------------------------------------------------
-        # Added line
-        # ----------------------------------------------------
-
-        if raw_line.startswith("+") and not raw_line.startswith("+++"):
-            added_lines.add(current_line)
-            context_lines.add(current_line)
-            current_line += 1
-            continue
-
-        # ----------------------------------------------------
-        # Deleted line
-        #
-        # Deleted lines do not exist on the right side.
-        # ----------------------------------------------------
-
-        if raw_line.startswith("-") and not raw_line.startswith("---"):
-            continue
-
-        # ----------------------------------------------------
-        # Context line
-        # ----------------------------------------------------
-
-        if raw_line.startswith(" "):
-            context_lines.add(current_line)
-            current_line += 1
-            continue
-
-        # Unknown diff metadata.
-        if raw_line.startswith("\\"):
-            continue
-
-    return added_lines, context_lines
-
-
-file_diff_info = {}
-
-for item in changed_files:
-
-    path = get_file_path(item)
-
-    if not path:
-        continue
-
-    patch = item.get("patch") or ""
-
-    added_lines, context_lines = parse_patch(patch)
-
-    file_diff_info[path] = {
-        "status": normalize_status(item.get("status")),
-        "added_lines": added_lines,
-        "context_lines": context_lines,
-        "patch": patch,
-    }
-
-
-# ============================================================
-# Filtering
-# ============================================================
-
-def filter_changed_files(items):
-    """
-    Keep every finding belonging to a file changed by the PR.
-
-    This intentionally does NOT require the finding's line to be
-    an added line.
-
-    Therefore:
-
-        modified file + old line      -> included
-        modified file + new line      -> included
-        added file                    -> included
-        renamed file                  -> included
-        deleted file                 -> included
-    """
-
-    result = []
-
-    for finding in items:
-        path = normalize_path(finding["file"])
-
-        if path in changed_paths:
-            result.append(finding)
+        seen.add(key)
+        result.append(finding)
 
     return result
 
 
-def filter_added_lines(items):
-    """
-    Keep findings whose reported line is an added line.
+def build_review_comment(finding):
+    path = normalize_path(finding["path"])
+    line = finding.get("line")
+    message = finding.get("message", "").strip()
 
-    This preserves the old `added` behavior.
-    """
+    if not path or not message:
+        return None
 
-    result = []
+    if not isinstance(line, int) or line < 1:
+        return None
 
-    for finding in items:
+    status = finding.get("_status")
 
-        path = normalize_path(finding["file"])
-        line_number = finding["line"]
-
-        info = file_diff_info.get(path)
-
-        if not info:
-            continue
-
-        if line_number in info["added_lines"]:
-            result.append(finding)
-
-    return result
-
-
-def filter_diff_context(items):
-    """
-    Keep findings that fall anywhere inside a changed diff hunk.
-    """
-
-    result = []
-
-    for finding in items:
-
-        path = normalize_path(finding["file"])
-        line_number = finding["line"]
-
-        info = file_diff_info.get(path)
-
-        if not info:
-            continue
-
-        if line_number in info["context_lines"]:
-            result.append(finding)
-
-    return result
-
-
-def filter_file(items):
-    """
-    Keep findings for PR files regardless of line location.
-
-    This is effectively the same file-level scope as
-    changed_files, but is retained as a separate mode for
-    compatibility.
-    """
-
-    return filter_changed_files(items)
-
-
-if FILTER_MODE == "changed_files":
-    filtered_findings = filter_changed_files(findings)
-
-elif FILTER_MODE == "added":
-    filtered_findings = filter_added_lines(findings)
-
-elif FILTER_MODE == "diff_context":
-    filtered_findings = filter_diff_context(findings)
-
-elif FILTER_MODE == "file":
-    filtered_findings = filter_file(findings)
-
-elif FILTER_MODE == "nofilter":
-    filtered_findings = findings
-
-else:
-    filtered_findings = []
-
-
-# ============================================================
-# Deduplicate findings
-# ============================================================
-
-deduplicated = []
-seen = set()
-
-for finding in filtered_findings:
-
-    key = (
-        finding["file"],
-        finding["line"],
-        finding.get("column"),
-        finding["message"],
-    )
-
-    if key in seen:
-        continue
-
-    seen.add(key)
-    deduplicated.append(finding)
-
-
-filtered_findings = deduplicated
-
-
-print(
-    f"Findings after '{FILTER_MODE}' filtering: "
-    f"{len(filtered_findings)}"
-)
-
-
-# ============================================================
-# No findings
-# ============================================================
-
-if not filtered_findings:
-    print(
-        f"No findings matched the configured Forgejo filter mode."
-    )
-    sys.exit(0)
-
-
-# ============================================================
-# Build Forgejo review comments
-# ============================================================
-
-comments = []
-general_comments = []
-
-for finding in filtered_findings:
-
-    path = normalize_path(finding["file"])
-    line_number = finding["line"]
-
-    info = file_diff_info.get(path, {})
-
-    status = info.get("status", "")
-
-    message = finding["message"]
-
-    body = (
-        f"{message}\n\n"
-        "_Automated review by reviewdog._"
-    )
-
-    # --------------------------------------------------------
-    # Deleted file
-    #
-    # A deleted file has no current RIGHT-side line.
-    # Keep the finding, but don't create an invalid inline
-    # comment against the current file.
-    # --------------------------------------------------------
-
+    # A deleted file cannot receive a normal RIGHT-side/new-position
+    # comment because the line no longer exists in the new revision.
     if status == "deleted":
+        return None
 
-        general_comments.append(
-            f"**{path}:{line_number}** — {message}"
-        )
-
-        continue
-
-    # --------------------------------------------------------
-    # Normal current-side finding
-    # --------------------------------------------------------
-
-    if not line_number or line_number < 1:
-
-        general_comments.append(
-            f"**{path}** — {message}"
-        )
-
-        continue
-
-    comment = {
+    return {
         "path": path,
-        "line": line_number,
-        "side": "RIGHT",
-        "body": body,
+        "body": (
+            f"{message}\n\n"
+            "_Automated review by reviewdog._"
+        ),
+        "new_position": line,
+        "old_position": 0,
     }
 
-    comments.append(comment)
+
+def build_review_comments(findings):
+    comments = []
+
+    for finding in findings:
+        comment = build_review_comment(finding)
+
+        if comment is not None:
+            comments.append(comment)
+
+    return comments
 
 
-# ============================================================
-# Review body
-# ============================================================
-
-review_body = (
-    "Automated multi-language code review by reviewdog."
-)
-
-if general_comments:
-
-    review_body += "\n\n"
-
-    review_body += (
-        "### Findings requiring general review\n\n"
+def post_review(
+    api_url,
+    owner,
+    repo,
+    pr_number,
+    head_sha,
+    token,
+    comments,
+):
+    url = (
+        f"{api_url.rstrip('/')}"
+        f"/repos/{owner}/{repo}"
+        f"/pulls/{pr_number}/reviews"
     )
 
-    for item in general_comments:
-        review_body += f"- {item}\n"
+    body = {
+        "event": "COMMENT",
+        "body": "Automated code review by reviewdog.",
+        "commit_id": head_sha,
+    }
 
+    if comments:
+        body["comments"] = comments
 
-# ============================================================
-# Nothing can be posted inline
-# ============================================================
+    payload = json.dumps(body).encode("utf-8")
 
-if not comments and not general_comments:
-
-    print("No comments to post.")
-    sys.exit(0)
-
-
-# ============================================================
-# Forgejo API
-# ============================================================
-
-review_url = (
-    f"{API_URL}"
-    f"/repos/{OWNER}/{REPO}"
-    f"/pulls/{PR_NUMBER}/reviews"
-)
-
-
-payload = {
-    "body": review_body,
-    "event": "COMMENT",
-}
-
-
-if comments:
-    payload["comments"] = comments
-
-
-request_body = json.dumps(payload).encode("utf-8")
-
-
-request = urllib.request.Request(
-    review_url,
-    data=request_body,
-    method="POST",
-)
-
-request.add_header(
-    "Authorization",
-    f"token {TOKEN}",
-)
-
-request.add_header(
-    "Accept",
-    "application/json",
-)
-
-request.add_header(
-    "Content-Type",
-    "application/json",
-)
-
-
-# ============================================================
-# Post review
-# ============================================================
-
-try:
-
-    with urllib.request.urlopen(
-        request,
-        timeout=60,
-    ) as response:
-
-        response_body = response.read().decode(
-            "utf-8",
-            errors="replace",
-        )
-
-        status_code = response.status
-
-        print(
-            f"Forgejo review posted successfully "
-            f"(HTTP {status_code})."
-        )
-
-        if response_body:
-            try:
-                response_json = json.loads(response_body)
-
-                review_id = response_json.get("id")
-
-                if review_id:
-                    print(
-                        f"Review ID: {review_id}"
-                    )
-
-            except json.JSONDecodeError:
-                pass
-
-except urllib.error.HTTPError as exc:
-
-    response_body = exc.read().decode(
-        "utf-8",
-        errors="replace",
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
     )
 
+    try:
+        with urllib.request.urlopen(request) as response:
+            status = response.status
+
+            if status < 200 or status >= 300:
+                print(f"ERROR: Forgejo API returned HTTP {status}.")
+                return False
+
+            return True
+
+    except urllib.error.HTTPError as exc:
+        print(f"ERROR: Forgejo API returned HTTP {exc.code}.")
+        return False
+
+    except urllib.error.URLError:
+        print("ERROR: Could not connect to Forgejo API.")
+        return False
+
+
+def print_summary(
+    total_findings,
+    changed_file_count,
+    filtered_count,
+    inline_count,
+    skipped_count,
+):
+    print(f"Parsed findings: {total_findings}")
+    print(f"Changed files: {changed_file_count}")
     print(
-        f"ERROR: Forgejo API returned HTTP "
-        f"{exc.code}.",
-        file=sys.stderr,
+        f"Findings after 'changed_files' filtering: "
+        f"{filtered_count}"
     )
+    print(f"Inline comments: {inline_count}")
+    print(f"Skipped findings: {skipped_count}")
 
-    if response_body:
-        print(
-            response_body,
-            file=sys.stderr,
+
+def main():
+    if len(sys.argv) != 10:
+        die(
+            "Usage: forgejo-review.py "
+            "<reviewdog-results> "
+            "<pr-files.json> "
+            "<filter> "
+            "<api-url> "
+            "<owner> "
+            "<repo> "
+            "<pr-number> "
+            "<head-sha> "
+            "<token>"
         )
 
-    sys.exit(1)
+    result_file = sys.argv[1]
+    pr_files_file = sys.argv[2]
+    filter_mode = sys.argv[3]
+    api_url = sys.argv[4]
+    owner = sys.argv[5]
+    repo = sys.argv[6]
+    pr_number = sys.argv[7]
+    head_sha = sys.argv[8]
+    token = sys.argv[9]
 
-except urllib.error.URLError as exc:
+    if filter_mode not in VALID_FILTERS:
+        die(f"Unsupported filter mode: {filter_mode}")
 
-    print(
-        f"ERROR: Could not connect to Forgejo: {exc}",
-        file=sys.stderr,
+    if not head_sha:
+        die("Pull request head SHA is required.")
+
+    if not token:
+        die("Forgejo token is required.")
+
+    pr_files = load_json(pr_files_file)
+
+    if not isinstance(pr_files, list):
+        die("Pull request files response is not an array.")
+
+    changed_files = build_changed_files(pr_files)
+
+    findings = parse_findings(result_file)
+
+    print("Reading reviewdog findings...")
+
+    filtered = filter_findings(
+        findings,
+        changed_files,
+        filter_mode,
     )
 
-    sys.exit(1)
+    filtered = deduplicate_findings(filtered)
+
+    comments = build_review_comments(filtered)
+
+    skipped_count = len(filtered) - len(comments)
+
+    print_summary(
+        total_findings=len(findings),
+        changed_file_count=len(changed_files),
+        filtered_count=len(filtered),
+        inline_count=len(comments),
+        skipped_count=skipped_count,
+    )
+
+    if not filtered:
+        print("No findings matched the configured Forgejo filter mode.")
+        return 0
+
+    if not comments:
+        print("No findings can be placed as inline Forgejo comments.")
+        return 0
+
+    print("Posting Forgejo review...")
+
+    success = post_review(
+        api_url=api_url,
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        token=token,
+        comments=comments,
+    )
+
+    if not success:
+        return 1
+
+    print(f"Posted {len(comments)} review comments.")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

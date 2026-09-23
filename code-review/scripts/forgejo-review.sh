@@ -12,7 +12,7 @@ API_URL="${FORGEJO_API_URL%/}"
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 EVENT_FILE="${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH is required}"
 
-FILTER_MODE="${REVIEW_FILTER_MODE:-added}"
+FILTER_MODE="${REVIEW_FILTER_MODE:-changed_files}"
 
 OWNER="${REPOSITORY%%/*}"
 REPO="${REPOSITORY#*/}"
@@ -155,7 +155,7 @@ BASE_SHA="$(
 import json
 import sys
 
-with open(sys.argv[1]) as f:
+with open(sys.argv[1], encoding="utf-8") as f:
     data = json.load(f)
 
 print(data.get("base", {}).get("sha", ""))
@@ -167,12 +167,17 @@ HEAD_SHA="$(
 import json
 import sys
 
-with open(sys.argv[1]) as f:
+with open(sys.argv[1], encoding="utf-8") as f:
     data = json.load(f)
 
 print(data.get("head", {}).get("sha", ""))
 PY
 )"
+
+if [ -z "$HEAD_SHA" ]; then
+    echo "ERROR: Could not determine pull request head SHA."
+    exit 1
+fi
 
 echo "Base SHA: ${BASE_SHA}"
 echo "Head SHA: ${HEAD_SHA}"
@@ -193,15 +198,21 @@ python3 - .forgejo-pr-files.json <<'PY'
 import json
 import sys
 
-with open(sys.argv[1]) as f:
+with open(sys.argv[1], encoding="utf-8") as f:
     files = json.load(f)
 
 for item in files:
-    print(f"  {item.get('filename', '')}")
+    filename = item.get("filename", "")
+    status = item.get("status", "")
+
+    if status:
+        print(f"  {filename} ({status})")
+    else:
+        print(f"  {filename}")
 PY
 
 # ------------------------------------------------------------
-# Parse reviewdog output
+# Parse reviewdog output and post Forgejo review
 # ------------------------------------------------------------
 
 python3 \
@@ -213,4 +224,5 @@ python3 \
     "$OWNER" \
     "$REPO" \
     "$PR_NUMBER" \
+    "$HEAD_SHA" \
     "$FORGEJO_TOKEN"
