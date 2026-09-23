@@ -135,6 +135,7 @@ runs:
         GITLEAKS_EXIT_CODE=0
 
         gitleaks detect \
+          --platform gitea \
           --source "${SCAN_PATH}" \
           --no-banner \
           --report-format json \
