@@ -36,14 +36,166 @@ def load_json(path):
         die(f"Failed to read JSON file: {exc}")
 
 
+# ------------------------------------------------------------
+# Path handling
+# ------------------------------------------------------------
+
+def normalize_path(path):
+    path = path.strip().strip("\"'")
+
+    path = path.replace("\\", "/")
+
+    while path.startswith("./"):
+        path = path[2:]
+
+    while path.startswith("/"):
+        path = path[1:]
+
+    return path
+
+
+# ------------------------------------------------------------
+# Reviewdog parsing
+# ------------------------------------------------------------
+
+def parse_reviewdog_line(line):
+    """
+    Supports reviewdog/local output such as:
+
+        AGENTS.md:5:81 error MD013/line-length ...
+        README.md:17:5 error MD060/table-column-style ...
+        file.java:42:10: message
+        file.java:42: message
+        file.java:42 message
+
+    Returns:
+
+        {
+            "path": str,
+            "line": int,
+            "column": int | None,
+            "message": str
+        }
+
+    or None.
+    """
+
+    line = line.rstrip("\n")
+
+    if not line.strip():
+        return None
+
+    # --------------------------------------------------------
+    # file:line:column message
+    #
+    # Example:
+    #
+    # AGENTS.md:5:81 error MD013/line-length ...
+    #
+    # This is the format produced by the current reviewdog run.
+    # --------------------------------------------------------
+
+    match = re.match(
+        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+)"
+        r"\s+(?P<message>.+)$",
+        line,
+    )
+
+    if match:
+        return {
+            "path": normalize_path(match.group("path")),
+            "line": int(match.group("line")),
+            "column": int(match.group("column")),
+            "message": match.group("message").strip(),
+        }
+
+    # --------------------------------------------------------
+    # file:line:column: message
+    # --------------------------------------------------------
+
+    match = re.match(
+        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):"
+        r"\s*(?P<message>.+)$",
+        line,
+    )
+
+    if match:
+        return {
+            "path": normalize_path(match.group("path")),
+            "line": int(match.group("line")),
+            "column": int(match.group("column")),
+            "message": match.group("message").strip(),
+        }
+
+    # --------------------------------------------------------
+    # file:line: message
+    # --------------------------------------------------------
+
+    match = re.match(
+        r"^(?P<path>.+?):(?P<line>\d+):"
+        r"\s*(?P<message>.+)$",
+        line,
+    )
+
+    if match:
+        return {
+            "path": normalize_path(match.group("path")),
+            "line": int(match.group("line")),
+            "column": None,
+            "message": match.group("message").strip(),
+        }
+
+    # --------------------------------------------------------
+    # file:line message
+    # --------------------------------------------------------
+
+    match = re.match(
+        r"^(?P<path>.+?):(?P<line>\d+)"
+        r"\s+(?P<message>.+)$",
+        line,
+    )
+
+    if match:
+        return {
+            "path": normalize_path(match.group("path")),
+            "line": int(match.group("line")),
+            "column": None,
+            "message": match.group("message").strip(),
+        }
+
+    return None
+
+
+def parse_findings(result_file):
+    findings = []
+
+    with open(
+        result_file,
+        "r",
+        encoding="utf-8",
+        errors="replace",
+    ) as f:
+        for raw_line in f:
+            finding = parse_reviewdog_line(raw_line)
+
+            if finding is not None:
+                findings.append(finding)
+
+    return findings
+
+
+# ------------------------------------------------------------
+# Forgejo changed files
+# ------------------------------------------------------------
+
 def normalize_status(item):
-    status = str(item.get("status", "")).lower().strip()
+    status = str(
+        item.get("status", "")
+    ).lower().strip()
 
     if status:
         return status
 
-    # Forgejo/Gitea responses can expose the change through fields
-    # such as additions/deletions/changes without an explicit status.
     additions = item.get("additions", 0) or 0
     deletions = item.get("deletions", 0) or 0
 
@@ -68,175 +220,130 @@ def build_changed_files(pr_files):
         if not filename:
             continue
 
+        filename = normalize_path(filename)
+
         changed[filename] = {
             "status": normalize_status(item),
-            "previous_filename": item.get("previous_filename"),
+            "previous_filename": (
+                normalize_path(item["previous_filename"])
+                if item.get("previous_filename")
+                else None
+            ),
         }
 
     return changed
 
 
-def parse_reviewdog_line(line):
-    """
-    Parse common reviewdog local reporter formats.
-
-    Supported examples:
-
-        file.go:10:5: message
-        file.go:10: message
-        file.go:10 message
-
-    Returns:
-        {
-            "path": str,
-            "line": int,
-            "column": int|None,
-            "message": str
-        }
-
-    or None.
-    """
-
-    line = line.rstrip("\n")
-
-    if not line.strip():
-        return None
-
-    # file:line:column: message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):\s*(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": match.group("path"),
-            "line": int(match.group("line")),
-            "column": int(match.group("column")),
-            "message": match.group("message").strip(),
-        }
-
-    # file:line: message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+):\s*(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": match.group("path"),
-            "line": int(match.group("line")),
-            "column": None,
-            "message": match.group("message").strip(),
-        }
-
-    # file:line message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+)\s+(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": match.group("path"),
-            "line": int(match.group("line")),
-            "column": None,
-            "message": match.group("message").strip(),
-        }
-
-    return None
-
-
-def parse_findings(result_file):
-    findings = []
-
-    with open(result_file, "r", encoding="utf-8", errors="replace") as f:
-        for raw_line in f:
-            finding = parse_reviewdog_line(raw_line)
-
-            if finding is not None:
-                findings.append(finding)
-
-    return findings
-
-
-def normalize_path(path):
-    path = path.strip()
-
-    if path.startswith("./"):
-        path = path[2:]
-
-    return path
-
-
 def finding_matches_file(finding, changed_files):
-    path = normalize_path(finding["path"])
+    finding_path = normalize_path(
+        finding.get("path", "")
+    )
 
-    if path in changed_files:
-        return path
+    if finding_path in changed_files:
+        return finding_path
 
-    # Some linters output ./path while Forgejo returns path.
+    # Handle possible repository-relative prefixes.
     for changed_path in changed_files:
-        if normalize_path(changed_path) == path:
+        normalized_changed = normalize_path(
+            changed_path
+        )
+
+        if finding_path == normalized_changed:
+            return changed_path
+
+        if finding_path.endswith(
+            "/" + normalized_changed
+        ):
+            return changed_path
+
+        if normalized_changed.endswith(
+            "/" + finding_path
+        ):
             return changed_path
 
     return None
 
 
-def filter_findings(findings, changed_files, filter_mode):
+# ------------------------------------------------------------
+# Filtering
+# ------------------------------------------------------------
+
+def filter_findings(
+    findings,
+    changed_files,
+    filter_mode,
+):
     if filter_mode == "nofilter":
         return findings
 
     filtered = []
 
     for finding in findings:
-        matched_path = finding_matches_file(finding, changed_files)
+
+        matched_path = finding_matches_file(
+            finding,
+            changed_files,
+        )
 
         if matched_path is None:
             continue
 
         file_info = changed_files[matched_path]
+
         status = file_info["status"]
 
-        if filter_mode in {"changed_files", "file"}:
+        if filter_mode in {
+            "changed_files",
+            "file",
+        }:
             if status not in CHANGED_FILE_STATUSES:
                 continue
 
             finding["path"] = matched_path
             finding["_status"] = status
+
             filtered.append(finding)
+
             continue
 
         if filter_mode == "added":
-            # Preserve the old behaviour: only findings belonging to
-            # newly-added files are considered.
+
             if status != "added":
                 continue
 
             finding["path"] = matched_path
             finding["_status"] = status
+
             filtered.append(finding)
+
             continue
 
         if filter_mode == "diff_context":
-            # The custom reporter does not have reviewdog's parsed diff
-            # information here. Treat the changed-file set as the
-            # available scope.
+
             finding["path"] = matched_path
             finding["_status"] = status
+
             filtered.append(finding)
+
             continue
 
     return filtered
 
+
+# ------------------------------------------------------------
+# Deduplication
+# ------------------------------------------------------------
 
 def deduplicate_findings(findings):
     seen = set()
     result = []
 
     for finding in findings:
+
         key = (
-            normalize_path(finding["path"]),
+            normalize_path(
+                finding.get("path", "")
+            ),
             finding.get("line"),
             finding.get("column"),
             finding.get("message"),
@@ -246,26 +353,44 @@ def deduplicate_findings(findings):
             continue
 
         seen.add(key)
+
         result.append(finding)
 
     return result
 
 
-def build_review_comment(finding):
-    path = normalize_path(finding["path"])
-    line = finding.get("line")
-    message = finding.get("message", "").strip()
+# ------------------------------------------------------------
+# Forgejo comments
+# ------------------------------------------------------------
 
-    if not path or not message:
+def build_review_comment(finding):
+    path = normalize_path(
+        finding.get("path", "")
+    )
+
+    line = finding.get("line")
+
+    message = finding.get(
+        "message",
+        "",
+    ).strip()
+
+    if not path:
         return None
 
-    if not isinstance(line, int) or line < 1:
+    if not message:
+        return None
+
+    if not isinstance(line, int):
+        return None
+
+    if line < 1:
         return None
 
     status = finding.get("_status")
 
-    # A deleted file cannot receive a normal RIGHT-side/new-position
-    # comment because the line no longer exists in the new revision.
+    # Deleted files cannot use new_position because
+    # the line does not exist in the new revision.
     if status == "deleted":
         return None
 
@@ -284,13 +409,22 @@ def build_review_comments(findings):
     comments = []
 
     for finding in findings:
-        comment = build_review_comment(finding)
 
-        if comment is not None:
-            comments.append(comment)
+        comment = build_review_comment(
+            finding
+        )
+
+        if comment is None:
+            continue
+
+        comments.append(comment)
 
     return comments
 
+
+# ------------------------------------------------------------
+# Forgejo API
+# ------------------------------------------------------------
 
 def post_review(
     api_url,
@@ -307,46 +441,81 @@ def post_review(
         f"/pulls/{pr_number}/reviews"
     )
 
-    body = {
+    payload = {
         "event": "COMMENT",
-        "body": "Automated code review by reviewdog.",
+        "body": (
+            "Automated code review by reviewdog."
+        ),
         "commit_id": head_sha,
+        "comments": comments,
     }
 
-    if comments:
-        body["comments"] = comments
-
-    payload = json.dumps(body).encode("utf-8")
+    data = json.dumps(
+        payload
+    ).encode("utf-8")
 
     request = urllib.request.Request(
         url,
-        data=payload,
+        data=data,
         method="POST",
         headers={
-            "Authorization": f"token {token}",
+            "Authorization": (
+                f"token {token}"
+            ),
             "Accept": "application/json",
-            "Content-Type": "application/json",
+            "Content-Type": (
+                "application/json"
+            ),
         },
     )
 
     try:
-        with urllib.request.urlopen(request) as response:
-            status = response.status
 
-            if status < 200 or status >= 300:
-                print(f"ERROR: Forgejo API returned HTTP {status}.")
-                return False
+        with urllib.request.urlopen(
+            request,
+            timeout=60,
+        ) as response:
 
-            return True
+            if 200 <= response.status < 300:
+                return True
+
+            print(
+                f"ERROR: Forgejo API returned "
+                f"HTTP {response.status}."
+            )
+
+            return False
 
     except urllib.error.HTTPError as exc:
-        print(f"ERROR: Forgejo API returned HTTP {exc.code}.")
+
+        print(
+            f"ERROR: Forgejo API returned "
+            f"HTTP {exc.code}."
+        )
+
         return False
 
     except urllib.error.URLError:
-        print("ERROR: Could not connect to Forgejo API.")
+
+        print(
+            "ERROR: Could not connect to "
+            "Forgejo API."
+        )
+
         return False
 
+    except TimeoutError:
+
+        print(
+            "ERROR: Forgejo API request timed out."
+        )
+
+        return False
+
+
+# ------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------
 
 def print_summary(
     total_findings,
@@ -355,17 +524,39 @@ def print_summary(
     inline_count,
     skipped_count,
 ):
-    print(f"Parsed findings: {total_findings}")
-    print(f"Changed files: {changed_file_count}")
     print(
-        f"Findings after 'changed_files' filtering: "
+        f"Parsed findings: "
+        f"{total_findings}"
+    )
+
+    print(
+        f"Changed files: "
+        f"{changed_file_count}"
+    )
+
+    print(
+        f"Findings after "
+        f"'changed_files' filtering: "
         f"{filtered_count}"
     )
-    print(f"Inline comments: {inline_count}")
-    print(f"Skipped findings: {skipped_count}")
 
+    print(
+        f"Inline comments: "
+        f"{inline_count}"
+    )
+
+    print(
+        f"Skipped findings: "
+        f"{skipped_count}"
+    )
+
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
 
 def main():
+
     if len(sys.argv) != 10:
         die(
             "Usage: forgejo-review.py "
@@ -391,24 +582,47 @@ def main():
     token = sys.argv[9]
 
     if filter_mode not in VALID_FILTERS:
-        die(f"Unsupported filter mode: {filter_mode}")
+        die(
+            f"Unsupported filter mode: "
+            f"{filter_mode}"
+        )
 
     if not head_sha:
-        die("Pull request head SHA is required.")
+        die(
+            "Pull request head SHA is required."
+        )
 
     if not token:
-        die("Forgejo token is required.")
+        die(
+            "Forgejo token is required."
+        )
 
-    pr_files = load_json(pr_files_file)
+    pr_files = load_json(
+        pr_files_file
+    )
 
-    if not isinstance(pr_files, list):
-        die("Pull request files response is not an array.")
+    if not isinstance(
+        pr_files,
+        list,
+    ):
+        die(
+            "Pull request files response "
+            "is not an array."
+        )
 
-    changed_files = build_changed_files(pr_files)
+    changed_files = build_changed_files(
+        pr_files
+    )
 
-    findings = parse_findings(result_file)
+    print(
+        "Reading reviewdog findings..."
+    )
 
-    print("Reading reviewdog findings...")
+    findings = parse_findings(
+        result_file
+    )
+
+    print()
 
     filtered = filter_findings(
         findings,
@@ -416,29 +630,50 @@ def main():
         filter_mode,
     )
 
-    filtered = deduplicate_findings(filtered)
+    filtered = deduplicate_findings(
+        filtered
+    )
 
-    comments = build_review_comments(filtered)
+    comments = build_review_comments(
+        filtered
+    )
 
-    skipped_count = len(filtered) - len(comments)
+    skipped_count = (
+        len(filtered)
+        - len(comments)
+    )
 
     print_summary(
         total_findings=len(findings),
-        changed_file_count=len(changed_files),
+        changed_file_count=len(
+            changed_files
+        ),
         filtered_count=len(filtered),
         inline_count=len(comments),
         skipped_count=skipped_count,
     )
 
+    print()
+
     if not filtered:
-        print("No findings matched the configured Forgejo filter mode.")
+        print(
+            "No findings matched the "
+            "configured Forgejo filter mode."
+        )
+
         return 0
 
     if not comments:
-        print("No findings can be placed as inline Forgejo comments.")
+        print(
+            "No findings can be placed as "
+            "inline Forgejo comments."
+        )
+
         return 0
 
-    print("Posting Forgejo review...")
+    print(
+        "Posting Forgejo review..."
+    )
 
     success = post_review(
         api_url=api_url,
@@ -453,7 +688,10 @@ def main():
     if not success:
         return 1
 
-    print(f"Posted {len(comments)} review comments.")
+    print(
+        f"Posted {len(comments)} "
+        f"review comments."
+    )
 
     return 0
 
