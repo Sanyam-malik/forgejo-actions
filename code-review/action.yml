@@ -1,7 +1,7 @@
 name: 'Multi-language Code Review'
 description: >
   Detects programming languages in a repository, runs open-source linters
-  through reviewdog, and posts the findings as inline comments on Forgejo
+  through reviewdog, and posts findings as inline comments on Forgejo
   pull requests. Security and secret scanning are intentionally out of scope.
 
 inputs:
@@ -47,25 +47,33 @@ inputs:
     description: >
       Minimum reviewdog severity: info, warning, or error.
     required: false
-    default: info
+    default: "info"
 
   filter-mode:
     description: >
-      Reviewdog filtering mode: added, diff_context, file, or nofilter.
+      Forgejo review filtering mode:
+      added, diff_context, file, or nofilter.
     required: false
-    default: added
+    default: "added"
 
   fail-level:
     description: >
       Fail threshold: none, any, info, warning, or error.
     required: false
-    default: none
+    default: "none"
 
   reviewdog-version:
     description: >
       Reviewdog version. Use latest, nightly, or vX.Y.Z.
     required: false
-    default: latest
+    default: "latest"
+
+  python-version:
+    description: >
+      Python version used by the Forgejo reporter.
+      Examples: 3, 3.11, 3.12.
+    required: false
+    default: "3"
 
   workdir:
     description: Directory to run the review from.
@@ -77,9 +85,9 @@ runs:
 
   steps:
 
-    # ------------------------------------------------------------
-    # Prepare action scripts
-    # ------------------------------------------------------------
+    # ============================================================
+    # Prepare scripts
+    # ============================================================
 
     - name: Prepare scripts
       shell: bash
@@ -90,12 +98,12 @@ runs:
 
         chmod +x "$SCRIPT_DIR/"*.sh
 
-        echo "Action scripts prepared:"
-        ls -l "$SCRIPT_DIR"
+        echo "Action scripts:"
+        ls -la "$SCRIPT_DIR"
 
-    # ------------------------------------------------------------
+    # ============================================================
     # Detect languages
-    # ------------------------------------------------------------
+    # ============================================================
 
     - name: Detect languages
       id: detect
@@ -110,9 +118,9 @@ runs:
 
         "${{ github.action_path }}/scripts/detect-languages.sh"
 
-    # ------------------------------------------------------------
+    # ============================================================
     # Install reviewdog
-    # ------------------------------------------------------------
+    # ============================================================
 
     - name: Install reviewdog
       id: install-reviewdog
@@ -123,13 +131,11 @@ runs:
       run: |
         set -euo pipefail
 
-        SCRIPT_DIR="${{ github.action_path }}/scripts"
+        "${{ github.action_path }}/scripts/install-reviewdog.sh"
 
-        "${SCRIPT_DIR}/install-reviewdog.sh"
-
-    # ------------------------------------------------------------
-    # Install language linters
-    # ------------------------------------------------------------
+    # ============================================================
+    # Install linters
+    # ============================================================
 
     - name: Install detected linters
       shell: bash
@@ -143,9 +149,9 @@ runs:
 
         "${{ github.action_path }}/scripts/install-linters.sh"
 
-    # ------------------------------------------------------------
+    # ============================================================
     # Generate reviewdog configuration
-    # ------------------------------------------------------------
+    # ============================================================
 
     - name: Build reviewdog config
       id: config
@@ -159,9 +165,27 @@ runs:
 
         "${{ github.action_path }}/scripts/generate-reviewdog-config.sh"
 
-    # ------------------------------------------------------------
+    # ============================================================
+    # Setup Python for custom Forgejo reporter
+    # ============================================================
+
+    - name: Setup Python
+      if: steps.config.outputs.runner-count != '0'
+      uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
+      with:
+        python_version: ${{ inputs.python-version }}
+        pkg_cache: ${{ inputs.pkg_cache }}
+
+    # ============================================================
     # Run reviewdog
-    # ------------------------------------------------------------
+    #
+    # IMPORTANT:
+    # Do NOT use -filter-mode=added here.
+    #
+    # reviewdog's PR filtering normally relies on a reporter providing
+    # the PR diff. We deliberately use our own Forgejo reporter, so
+    # the Forgejo reporter owns diff filtering.
+    # ============================================================
 
     - name: Run reviewdog
       id: review
@@ -170,36 +194,32 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         REVIEWDOG_LEVEL: ${{ inputs.level }}
-        REVIEWDOG_FILTER_MODE: ${{ inputs.filter-mode }}
       run: |
         set -euo pipefail
 
         echo "Running reviewdog"
         echo "Level: $REVIEWDOG_LEVEL"
-        echo "Filter mode: $REVIEWDOG_FILTER_MODE"
+        echo "Filter mode will be handled by custom Forgejo reporter"
 
         reviewdog \
           -conf=.reviewdog.generated.yml \
           -reporter=local \
           -level="$REVIEWDOG_LEVEL" \
-          -filter-mode="$REVIEWDOG_FILTER_MODE" \
+          -filter-mode=nofilter \
           -fail-level=none \
           -tee \
           > reviewdog-results.txt
 
         echo
-        echo "Reviewdog output:"
+        echo "========================================"
+        echo "Reviewdog output"
+        echo "========================================"
+
         cat reviewdog-results.txt || true
 
     # ============================================================
-    # Install Python
+    # Custom Forgejo reporter
     # ============================================================
-    - name: Install Python
-      uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
-
-    # ------------------------------------------------------------
-    # Forgejo custom reporter
-    # ------------------------------------------------------------
 
     - name: Post Forgejo review
       if: steps.config.outputs.runner-count != '0'
@@ -208,15 +228,16 @@ runs:
       env:
         FORGEJO_TOKEN: ${{ inputs.token }}
         FORGEJO_API_URL: ${{ env.GITHUB_API_URL }}
+        REVIEW_FILTER_MODE: ${{ inputs.filter-mode }}
       run: |
         set -euo pipefail
 
         "${{ github.action_path }}/scripts/forgejo-review.sh" \
           reviewdog-results.txt
 
-    # ------------------------------------------------------------
-    # Nothing to run
-    # ------------------------------------------------------------
+    # ============================================================
+    # Nothing to review
+    # ============================================================
 
     - name: No linters ran
       if: steps.config.outputs.runner-count == '0'

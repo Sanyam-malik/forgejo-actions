@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-RESULT_FILE="${1:?Usage: forgejo-review.sh <reviewdog-output>}"
+RESULT_FILE="${1:?Usage: forgejo-review.sh <reviewdog-results-file>}"
 
 : "${FORGEJO_TOKEN:?FORGEJO_TOKEN is required}"
 : "${FORGEJO_API_URL:?FORGEJO_API_URL is required}"
@@ -10,17 +10,42 @@ RESULT_FILE="${1:?Usage: forgejo-review.sh <reviewdog-output>}"
 API_URL="${FORGEJO_API_URL%/}"
 
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+EVENT_FILE="${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH is required}"
+
+FILTER_MODE="${REVIEW_FILTER_MODE:-added}"
 
 OWNER="${REPOSITORY%%/*}"
 REPO="${REPOSITORY#*/}"
 
-EVENT_FILE="${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH is required}"
-
-echo "Forgejo repository: ${OWNER}/${REPO}"
-echo "Forgejo API: ${API_URL}"
+echo "========================================"
+echo "Forgejo Code Review"
+echo "========================================"
+echo "Repository : ${OWNER}/${REPO}"
+echo "API URL    : ${API_URL}"
+echo "Filter     : ${FILTER_MODE}"
+echo
 
 # ------------------------------------------------------------
-# Determine pull request number
+# Validate filter
+# ------------------------------------------------------------
+
+case "$FILTER_MODE" in
+    added)
+        ;;
+    diff_context)
+        ;;
+    file)
+        ;;
+    nofilter)
+        ;;
+    *)
+        echo "Unsupported filter mode: $FILTER_MODE"
+        exit 1
+        ;;
+esac
+
+# ------------------------------------------------------------
+# Determine PR number
 # ------------------------------------------------------------
 
 PR_NUMBER="$(
@@ -28,15 +53,20 @@ PR_NUMBER="$(
 import json
 import sys
 
-with open(sys.argv[1], "r", encoding="utf-8") as f:
+event_file = sys.argv[1]
+
+with open(event_file, "r", encoding="utf-8") as f:
     event = json.load(f)
 
-pr = event.get("pull_request", {})
+number = None
 
-number = (
-    pr.get("number")
-    or event.get("number")
-)
+pull_request = event.get("pull_request")
+
+if isinstance(pull_request, dict):
+    number = pull_request.get("number")
+
+if not number:
+    number = event.get("number")
 
 if number:
     print(number)
@@ -45,20 +75,19 @@ PY
 
 if [ -z "$PR_NUMBER" ]; then
     echo "ERROR: Could not determine pull request number."
-    echo "Event payload:"
-    cat "$EVENT_FILE"
     exit 1
 fi
 
-echo "Pull request: #$PR_NUMBER"
+echo "Pull request: #${PR_NUMBER}"
 
 # ------------------------------------------------------------
-# Helpers
+# API helper
 # ------------------------------------------------------------
 
 forgejo_api() {
-    local method="$1"
-    local url="$2"
+
+    local METHOD="$1"
+    local PATH="$2"
 
     shift 2
 
@@ -66,242 +95,93 @@ forgejo_api() {
         --fail \
         --silent \
         --show-error \
-        --request "$method" \
+        --location \
+        --request "$METHOD" \
         --header "Authorization: token ${FORGEJO_TOKEN}" \
+        --header "Accept: application/json" \
         --header "Content-Type: application/json" \
         "$@" \
-        "${API_URL}${url}"
+        "${API_URL}${PATH}"
 }
 
 # ------------------------------------------------------------
-# Read reviewdog output
+# Read PR
 # ------------------------------------------------------------
 
-if [ ! -f "$RESULT_FILE" ]; then
-    echo "No reviewdog result file found."
-    exit 0
-fi
+PR_JSON="$(
+    forgejo_api \
+        GET \
+        "/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}"
+)"
 
-if [ ! -s "$RESULT_FILE" ]; then
-    echo "Reviewdog produced no findings."
-    exit 0
-fi
+printf '%s\n' "$PR_JSON" > .forgejo-pr.json
 
-echo
-echo "Reviewdog findings:"
-cat "$RESULT_FILE"
-
-# ------------------------------------------------------------
-# Convert reviewdog output to JSON
-# ------------------------------------------------------------
-
-python3 - "$RESULT_FILE" "$API_URL" "$OWNER" "$REPO" "$PR_NUMBER" "$FORGEJO_TOKEN" <<'PY'
+BASE_SHA="$(
+    python3 - .forgejo-pr.json <<'PY'
 import json
-import os
-import re
 import sys
-import urllib.request
-import urllib.error
 
-result_file = sys.argv[1]
-api_url = sys.argv[2]
-owner = sys.argv[3]
-repo = sys.argv[4]
-pr_number = sys.argv[5]
-token = sys.argv[6]
-
-# ------------------------------------------------------------
-# Parse reviewdog local output
-#
-# Expected common format:
-#
-# file:line:column: message
-# file:line: message
-#
-# The parser intentionally accepts several common forms.
-# ------------------------------------------------------------
-
-findings = []
-
-patterns = [
-    re.compile(
-        r"^(?P<file>.+?):(?P<line>\d+):(?P<column>\d+):\s*(?P<message>.+)$"
-    ),
-    re.compile(
-        r"^(?P<file>.+?):(?P<line>\d+):\s*(?P<message>.+)$"
-    ),
-    re.compile(
-        r"^(?P<file>.+?)\((?P<line>\d+),(?P<column>\d+)\):\s*(?P<message>.+)$"
-    ),
-]
-
-with open(result_file, "r", encoding="utf-8", errors="replace") as f:
-    for raw in f:
-        line = raw.strip()
-
-        if not line:
-            continue
-
-        matched = None
-
-        for pattern in patterns:
-            match = pattern.match(line)
-
-            if match:
-                matched = match
-                break
-
-        if not matched:
-            continue
-
-        data = matched.groupdict()
-
-        findings.append({
-            "file": data["file"],
-            "line": int(data["line"]),
-            "column": int(data.get("column") or 1),
-            "message": data["message"],
-        })
-
-print(f"Parsed {len(findings)} finding(s).")
-
-if not findings:
-    print("No machine-readable findings found.")
-    sys.exit(0)
-
-# ------------------------------------------------------------
-# Forgejo API helper
-# ------------------------------------------------------------
-
-def request(method, path, payload=None):
-    url = f"{api_url}{path}"
-
-    body = None
-
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
-        headers={
-            "Authorization": f"token {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(req) as response:
-            raw = response.read()
-
-            if not raw:
-                return {}
-
-            return json.loads(raw)
-
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-
-        print(
-            f"Forgejo API error {e.code}: {body}",
-            file=sys.stderr,
-        )
-
-        raise
-
-
-# ------------------------------------------------------------
-# Get PR information
-# ------------------------------------------------------------
-
-pr = request(
-    "GET",
-    f"/repos/{owner}/{repo}/pulls/{pr_number}",
-)
+with open(sys.argv[1]) as f:
+    data = json.load(f)
 
 print(
-    f"PR head: {pr.get('head', {}).get('sha', '')}"
+    data.get("base", {}).get("sha", "")
 )
+PY
+)"
+
+HEAD_SHA="$(
+    python3 - .forgejo-pr.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    data = json.load(f)
 
 print(
-    f"PR base: {pr.get('base', {}).get('sha', '')}"
+    data.get("head", {}).get("sha", "")
 )
+PY
+)"
+
+echo "Base SHA: ${BASE_SHA}"
+echo "Head SHA: ${HEAD_SHA}"
 
 # ------------------------------------------------------------
 # Get changed files
 # ------------------------------------------------------------
 
-files = request(
-    "GET",
-    f"/repos/{owner}/{repo}/pulls/{pr_number}/files",
-)
+forgejo_api \
+    GET \
+    "/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/files" \
+    > .forgejo-pr-files.json
 
-changed_files = {}
+echo
+echo "Changed files:"
+python3 - .forgejo-pr-files.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    files = json.load(f)
 
 for item in files:
-    filename = item.get("filename")
-
-    if not filename:
-        continue
-
-    changed_files[filename] = item
-
-print(f"Changed files: {len(changed_files)}")
-
-# ------------------------------------------------------------
-# Only report findings that belong to changed files.
-#
-# This provides a second layer of protection even when reviewdog
-# filtering is configured as "file" or "nofilter".
-# ------------------------------------------------------------
-
-for finding in findings:
-    filename = finding["file"]
-
-    if filename not in changed_files:
-        continue
-
-    message = (
-        f"**{finding['message']}**\n\n"
-        f"_reviewdog_"
+    print(
+        f"  {item.get('filename', '')}"
     )
-
-    payload = {
-        "body": message,
-        "path": filename,
-        "line": finding["line"],
-        "side": "right",
-    }
-
-    try:
-        request(
-            "POST",
-            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-            {
-                "body": message,
-                "event": "COMMENT",
-                "comments": [
-                    {
-                        "path": filename,
-                        "line": finding["line"],
-                        "side": "RIGHT",
-                        "body": message,
-                    }
-                ],
-            },
-        )
-
-        print(
-            f"Posted comment: {filename}:{finding['line']}"
-        )
-
-    except Exception as exc:
-        print(
-            f"Failed to post comment for "
-            f"{filename}:{finding['line']}: {exc}",
-            file=sys.stderr,
-        )
-
 PY
+
+# ------------------------------------------------------------
+# Parse reviewdog output
+# ------------------------------------------------------------
+
+python3 \
+    "${GITHUB_ACTION_PATH}/scripts/forgejo-review.py" \
+    "$RESULT_FILE" \
+    .forgejo-pr-files.json \
+    "$FILTER_MODE" \
+    "$API_URL" \
+    "$OWNER" \
+    "$REPO" \
+    "$PR_NUMBER" \
+    "$FORGEJO_TOKEN"
