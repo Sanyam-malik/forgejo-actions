@@ -255,10 +255,12 @@ runs:
         fi
 
         # ----------------------------------------------------------
-        # No findings
+        # No findings / scan failure
         # ----------------------------------------------------------
-        if [[ "${TOTAL_COUNT}" -eq 0 ]]; then
-          echo "| — | — | No security issues detected | — | — | — | — |" >> "${SUMMARY}"
+        if [[ "${GITLEAKS_SCAN_ERROR}" == "true" || "${TRIVY_SCAN_ERROR}" == "true" ]]; then
+        echo "| — | — | Scan failed — results unavailable | — | — | — | — |" >> "${SUMMARY}"
+        elif [[ "${TOTAL_COUNT}" -eq 0 ]]; then
+        echo "| — | — | No security issues detected | — | — | — | — |" >> "${SUMMARY}"
         fi
 
         # ----------------------------------------------------------
@@ -268,6 +270,12 @@ runs:
           echo ""
           echo "### Summary"
           echo ""
+        
+          if [[ "${GITLEAKS_SCAN_ERROR}" == "true" || "${TRIVY_SCAN_ERROR}" == "true" ]]; then
+          echo "> ⚠️ Scan did not complete. Issue counts are not reliable."
+          echo ""
+          fi
+        
           echo "| Metric | Count |"
           echo "|---|---:|"
           echo "| Secrets | ${SECRET_COUNT} |"
