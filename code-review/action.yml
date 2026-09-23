@@ -51,10 +51,10 @@ inputs:
 
   filter-mode:
     description: >
-      Forgejo review filtering mode:
-      added, diff_context, file, or nofilter.
+      Review scope:
+      changed_files, added_lines, file, or nofilter.
     required: false
-    default: "added"
+    default: "changed_files"
 
   fail-level:
     description: >
