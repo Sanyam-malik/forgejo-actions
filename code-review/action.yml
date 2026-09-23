@@ -173,44 +173,6 @@ runs:
         python_version: ${{ inputs.python-version }}
 
     # ============================================================
-    # Setup reporter dependencies
-    # ============================================================
-
-    - name: Setup reporter dependencies
-      if: steps.config.outputs.runner-count != '0'
-      shell: bash
-      run: |
-        set -euo pipefail
-        
-        echo "Checking reporter dependencies..."
-        
-        if ! command -v curl >/dev/null 2>&1; then
-          echo "curl not found; installing..."
-        
-          if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y curl
-        
-          elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y curl
-        
-          elif command -v yum >/dev/null 2>&1; then
-            sudo yum install -y curl
-        
-          elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache curl
-        
-          elif command -v zypper >/dev/null 2>&1; then
-            sudo zypper install -y curl
-        
-          else
-            echo "ERROR: Unsupported distribution."
-            exit 1
-          fi
-        fi
-
-
-    # ============================================================
     # Run reviewdog
     #
     # IMPORTANT:

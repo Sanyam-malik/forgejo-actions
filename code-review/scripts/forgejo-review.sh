@@ -30,19 +30,53 @@ echo
 # ------------------------------------------------------------
 
 case "$FILTER_MODE" in
-    added)
-        ;;
-    diff_context)
-        ;;
-    file)
-        ;;
-    nofilter)
+    added|diff_context|file|nofilter)
         ;;
     *)
         echo "Unsupported filter mode: $FILTER_MODE"
         exit 1
         ;;
 esac
+
+# ------------------------------------------------------------
+# Ensure curl is installed
+# ------------------------------------------------------------
+
+if ! command -v curl >/dev/null 2>&1; then
+
+    echo "curl not found. Installing curl..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+
+        sudo apt-get update
+        sudo apt-get install -y curl
+
+    elif command -v dnf >/dev/null 2>&1; then
+
+        sudo dnf install -y curl
+
+    elif command -v yum >/dev/null 2>&1; then
+
+        sudo yum install -y curl
+
+    elif command -v apk >/dev/null 2>&1; then
+
+        sudo apk add --no-cache curl
+
+    elif command -v zypper >/dev/null 2>&1; then
+
+        sudo zypper install -y curl
+
+    else
+        echo "ERROR: Could not install curl."
+        echo "Supported package managers: apt-get, dnf, yum, apk, zypper."
+        exit 1
+    fi
+fi
+
+CURL="$(command -v curl)"
+
+echo "curl       : ${CURL}"
 
 # ------------------------------------------------------------
 # Determine PR number
@@ -79,20 +113,6 @@ if [ -z "$PR_NUMBER" ]; then
 fi
 
 echo "Pull request: #${PR_NUMBER}"
-
-# ------------------------------------------------------------
-# Resolve curl
-# ------------------------------------------------------------
-
-CURL="$(command -v curl || true)"
-
-if [ -z "$CURL" ]; then
-    echo "ERROR: curl is required by the Forgejo reporter but was not found."
-    echo "PATH=${PATH}"
-    exit 1
-fi
-
-echo "curl       : ${CURL}"
 
 # ------------------------------------------------------------
 # API helper
@@ -138,9 +158,7 @@ import sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 
-print(
-    data.get("base", {}).get("sha", "")
-)
+print(data.get("base", {}).get("sha", ""))
 PY
 )"
 
@@ -152,9 +170,7 @@ import sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 
-print(
-    data.get("head", {}).get("sha", "")
-)
+print(data.get("head", {}).get("sha", ""))
 PY
 )"
 
@@ -181,9 +197,7 @@ with open(sys.argv[1]) as f:
     files = json.load(f)
 
 for item in files:
-    print(
-        f"  {item.get('filename', '')}"
-    )
+    print(f"  {item.get('filename', '')}")
 PY
 
 # ------------------------------------------------------------
