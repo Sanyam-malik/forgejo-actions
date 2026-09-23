@@ -5,6 +5,8 @@
 # ...) when that toolchain isn't preinstalled on the runner image.
 set -uo pipefail
 
+export PATH="$HOME/.local/bin:$PATH"
+
 LANGUAGES="${LANGUAGES:-}"
 EXCLUDE_TOOLS="${EXCLUDE_TOOLS:-}"
 
@@ -34,7 +36,7 @@ fi
 
 if has_lang python && ! excluded ruff; then
   echo "-> ruff"
-  pip install --user --quiet ruff || echo "  WARN: ruff install failed (is Python set up?)"
+  python3 -m pip install --user --quiet ruff || echo "  WARN: ruff install failed (is Python set up?)"
 fi
 
 if has_lang javascript && ! excluded eslint; then
@@ -55,7 +57,7 @@ fi
 
 if has_lang yaml && ! excluded yamllint; then
   echo "-> yamllint"
-  pip install --user --quiet yamllint || echo "  WARN: yamllint install failed (is Python set up?)"
+  python3 -m pip install --user --quiet yamllint || echo "  WARN: yamllint install failed (is Python set up?)"
 fi
 
 if has_lang dockerfile && ! excluded hadolint; then
