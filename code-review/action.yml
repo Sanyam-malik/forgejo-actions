@@ -181,36 +181,44 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-
+        
         echo "Checking reporter dependencies..."
-
-        if command -v curl >/dev/null 2>&1; then
-          echo "curl already installed"
-        else
+        
+        if ! command -v curl >/dev/null 2>&1; then
           echo "curl not found; installing..."
-
+        
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y curl
-
+        
           elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y curl
-
+        
           elif command -v yum >/dev/null 2>&1; then
             sudo yum install -y curl
-
+        
           elif command -v apk >/dev/null 2>&1; then
             sudo apk add --no-cache curl
-
+        
           elif command -v zypper >/dev/null 2>&1; then
             sudo zypper install -y curl
-
+        
           else
             echo "ERROR: Unsupported distribution."
-            echo "Cannot install curl automatically."
             exit 1
           fi
         fi
+        
+        CURL_PATH="$(command -v curl)"
+        CURL_DIR="$(dirname "$CURL_PATH")"
+        
+        echo "curl: $CURL_PATH"
+        echo "curl directory: $CURL_DIR"
+        
+        echo "$CURL_DIR" >> "$GITHUB_PATH"
+        
+        # Make it available in the current step too.
+        export PATH="$CURL_DIR:$PATH"
 
 
     # ============================================================
