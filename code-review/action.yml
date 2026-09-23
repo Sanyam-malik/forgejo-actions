@@ -1,3 +1,78 @@
+name: 'Multi-language Code Review (reviewdog)'
+description: >
+  Detects the programming language(s) used in a repository and runs
+  open-source linters through reviewdog, posting findings as inline
+  pull-request review comments. Security / secret scanning is intentionally
+  out of scope — this action is for style, quality and maintainability review.
+  Designed for Forgejo Actions using reviewdog's gitea-pr-review reporter.
+
+inputs:
+  token:
+    description: >
+      Token used to post PR review comments. Defaults to the Forgejo-provided
+      GitHub-compatible workflow token.
+    required: false
+    default: ${{ github.token }}
+
+  pkg_cache:
+    description: Package cache host or base URL
+    required: false
+    default: ""
+
+  languages:
+    description: >
+      Comma separated list to force which languages are linted, skipping
+      auto-detection (e.g. "go,python"). Leave empty to auto-detect.
+    required: false
+    default: ''
+
+  exclude-languages:
+    description: 'Comma separated list of detected languages to skip.'
+    required: false
+    default: ''
+
+  exclude-tools:
+    description: >
+      Comma separated list of tool names to never run, even if their
+      language is detected. Security/secret scanners are never included
+      by this action.
+    required: false
+    default: ''
+
+  min-files:
+    description: >
+      Minimum number of matching files before a language counts as used.
+    required: false
+    default: '1'
+
+  level:
+    description: 'Minimum severity reported: info, warning, or error.'
+    required: false
+    default: 'info'
+
+  filter-mode:
+    description: >
+      Reviewdog filter mode: added, diff_context, file, or nofilter.
+    required: false
+    default: 'added'
+
+  fail-level:
+    description: >
+      Reviewdog fail level: none, any, info, warning, or error.
+    required: false
+    default: 'none'
+
+  reviewdog-version:
+    description: >
+      Reviewdog version to install (latest, nightly, or vX.Y.Z).
+    required: false
+    default: latest
+
+  workdir:
+    description: 'Directory to run the review from.'
+    required: false
+    default: '.'
+
 runs:
   using: composite
 
@@ -5,7 +80,7 @@ runs:
     - name: Prepare scripts
       shell: bash
       run: |
-        set -euo pipefail
+        set -e
 
         SCRIPT_DIR="${{ github.action_path }}/scripts"
 
@@ -22,22 +97,106 @@ runs:
       run: |
         "${{ github.action_path }}/scripts/detect-languages.sh"
 
-    - name: Install reviewdog
+    - id: install-reviewdog
+      name: Install reviewdog
       shell: bash
       run: |
-        set -euo pipefail
+        set -e
+
+        PKG_CACHE="${{ inputs.pkg_cache }}"
+        VERSION="${{ inputs.reviewdog-version }}"
+
+        if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          BASE_URL="${PKG_CACHE_BASE}/github.com/reviewdog/reviewdog"
+          echo "Using pkg-cache mirror: $BASE_URL"
+        else
+          BASE_URL="https://github.com/reviewdog/reviewdog"
+          echo "Using official reviewdog releases: $BASE_URL"
+        fi
+
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(
+            curl -fsSL \
+              "https://api.github.com/repos/reviewdog/reviewdog/releases/latest" |
+              grep -oP '"tag_name"\s*:\s*"\K[^"]+' |
+              head -n 1
+          )
+        fi
+
+        if [ -z "$VERSION" ]; then
+          echo "Unable to determine reviewdog version"
+          exit 1
+        fi
+
+        VERSION="${VERSION#v}"
+
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        ARCH="$(uname -m)"
+
+        case "$ARCH" in
+          x86_64)
+            ARCH="amd64"
+            ;;
+          aarch64|arm64)
+            ARCH="arm64"
+            ;;
+          armv7l)
+            ARCH="armv7"
+            ;;
+          *)
+            echo "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+        esac
+
+        case "$OS" in
+          linux)
+            OS="Linux"
+            ;;
+          darwin)
+            OS="Darwin"
+            ;;
+          *)
+            echo "Unsupported operating system: $OS"
+            exit 1
+            ;;
+        esac
+
+        ARCHIVE="reviewdog_${VERSION}_${OS}_${ARCH}.tar.gz"
+        DOWNLOAD_URL="${BASE_URL}/releases/download/v${VERSION}/${ARCHIVE}"
+
+        echo "Installing reviewdog $VERSION"
+        echo "Download URL: $DOWNLOAD_URL"
 
         REVIEWDOG_BIN="${{ runner.temp }}/reviewdog-bin"
 
         mkdir -p "$REVIEWDOG_BIN"
 
-        curl -sfL \
-          https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh \
-          | sh -s -- \
-              -b "$REVIEWDOG_BIN" \
-              "${{ inputs.reviewdog-version }}"
+        curl -L --fail --retry 5 --retry-delay 5 \
+          -o "${RUNNER_TEMP}/reviewdog.tar.gz" \
+          "$DOWNLOAD_URL"
+
+        tar -xzf "${RUNNER_TEMP}/reviewdog.tar.gz" \
+          -C "$REVIEWDOG_BIN"
+
+        chmod +x "$REVIEWDOG_BIN/reviewdog"
 
         echo "$REVIEWDOG_BIN" >> "$GITHUB_PATH"
+
+        echo "reviewdog_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+        echo "Reviewdog installed at: $REVIEWDOG_BIN/reviewdog"
+
+        "$REVIEWDOG_BIN/reviewdog" -version
 
     - name: Install detected linters
       shell: bash
@@ -66,7 +225,7 @@ runs:
         REVIEWDOG_GITEA_API_TOKEN: ${{ inputs.token }}
         GITEA_API_URL: ${{ env.GITHUB_API_URL }}
       run: |
-        set -euo pipefail
+        set -e
 
         echo "Using reviewdog reporter: gitea-pr-review"
 
