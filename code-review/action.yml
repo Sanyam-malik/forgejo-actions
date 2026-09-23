@@ -1,0 +1,132 @@
+name: 'Multi-language Code Review (reviewdog)'
+description: >
+  Detects the programming language(s) used in a repository and runs
+  open-source linters through reviewdog, posting the findings as inline
+  pull-request review comments. Security / secret scanning is intentionally
+  out of scope — this action is style, quality and maintainability review
+  only. Designed for Forgejo Actions using reviewdog's gitea-pr-review
+  reporter.
+
+inputs:
+  token:
+    description: >
+      Token used to post PR review comments. Defaults to the Forgejo-provided
+      GitHub-compatible workflow token.
+    required: false
+    default: ${{ github.token }}
+
+  languages:
+    description: >
+      Comma separated list to force which languages are linted, skipping
+      auto-detection (e.g. "go,python"). Leave empty to auto-detect.
+    required: false
+    default: ''
+
+  exclude-languages:
+    description: 'Comma separated list of detected languages to skip.'
+    required: false
+    default: ''
+
+  exclude-tools:
+    description: >
+      Comma separated list of tool names to never run, even if their
+      language is detected. Security/secret scanners (gosec, bandit,
+      semgrep, trivy, gitleaks, trufflehog, checkov, tfsec, ...) are never
+      included by this action in the first place — this input is only an
+      extra safety valve, e.g. to silence a noisy linter.
+    required: false
+    default: ''
+
+  min-files:
+    description: 'Minimum number of matching files before a language counts as "used".'
+    required: false
+    default: '1'
+
+  level:
+    description: 'Minimum severity reported: info, warning, or error.'
+    required: false
+    default: 'info'
+
+  filter-mode:
+    description: 'reviewdog -filter-mode: added, diff_context, file, or nofilter.'
+    required: false
+    default: 'added'
+
+  fail-level:
+    description: 'reviewdog -fail-level: none, any, info, warning, or error.'
+    required: false
+    default: 'none'
+
+  reviewdog-version:
+    description: "reviewdog version to install ('latest', 'nightly', or vX.Y.Z)."
+    required: false
+    default: 'latest'
+
+  workdir:
+    description: 'Directory to run the review from.'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Detect languages
+      id: detect
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        LANGUAGES_OVERRIDE: ${{ inputs.languages }}
+        EXCLUDE_LANGUAGES: ${{ inputs.exclude-languages }}
+        MIN_FILES: ${{ inputs.min-files }}
+      run: ${{ github.action_path }}/scripts/detect-languages.sh
+
+    - name: Install reviewdog
+      shell: bash
+      run: |
+        curl -sfL https://raw.githubusercontent.com/reviewdog/reviewdog/master/install.sh \
+          | sh -s -- -b "${{ runner.temp }}/reviewdog-bin" ${{ inputs.reviewdog-version }}
+
+        echo "${{ runner.temp }}/reviewdog-bin" >> "$GITHUB_PATH"
+
+    - name: Install detected linters
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        LANGUAGES: ${{ steps.detect.outputs.languages }}
+        EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
+      run: ${{ github.action_path }}/scripts/install-linters.sh
+
+    - name: Build reviewdog config
+      id: config
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        LANGUAGES: ${{ steps.detect.outputs.languages }}
+        EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
+      run: ${{ github.action_path }}/scripts/generate-reviewdog-config.sh
+
+    - name: Run reviewdog
+      if: steps.config.outputs.runner-count != '0'
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        REVIEWDOG_GITEA_API_TOKEN: ${{ inputs.token }}
+        GITEA_API_URL: ${{ env.GITHUB_API_URL }}
+      run: |
+        set -e
+
+        echo "Using reviewdog reporter: gitea-pr-review"
+
+        reviewdog \
+          -conf=.reviewdog.generated.yml \
+          -reporter="gitea-pr-review" \
+          -level="${{ inputs.level }}" \
+          -filter-mode="${{ inputs.filter-mode }}" \
+          -fail-level="${{ inputs.fail-level }}"
+
+    - name: No linters ran
+      if: steps.config.outputs.runner-count == '0'
+      shell: bash
+      run: |
+        echo "No supported/detected languages had a matching linter installed — nothing to review."
