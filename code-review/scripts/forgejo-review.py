@@ -88,11 +88,9 @@ def parse_reviewdog_line(line):
     # --------------------------------------------------------
     # file:line:column message
     #
-    # Example:
+    # Current reviewdog format:
     #
     # AGENTS.md:5:81 error MD013/line-length ...
-    #
-    # This is the format produced by the current reviewdog run.
     # --------------------------------------------------------
 
     match = re.match(
@@ -189,15 +187,49 @@ def parse_findings(result_file):
 # ------------------------------------------------------------
 
 def normalize_status(item):
+    """
+    Normalize Forgejo file status.
+
+    Forgejo may report:
+
+        added
+        modified
+        changed
+        renamed
+        deleted
+
+    Internally we treat "changed" as "modified".
+    """
+
     status = str(
         item.get("status", "")
     ).lower().strip()
 
-    if status:
+    # Forgejo can report "changed".
+    if status == "changed":
+        return "modified"
+
+    if status in {
+        "added",
+        "modified",
+        "renamed",
+        "deleted",
+    }:
         return status
 
-    additions = item.get("additions", 0) or 0
-    deletions = item.get("deletions", 0) or 0
+    # --------------------------------------------------------
+    # Fallback based on additions/deletions
+    # --------------------------------------------------------
+
+    additions = item.get(
+        "additions",
+        0,
+    ) or 0
+
+    deletions = item.get(
+        "deletions",
+        0,
+    ) or 0
 
     if additions > 0 and deletions == 0:
         return "added"
@@ -208,6 +240,9 @@ def normalize_status(item):
     if additions > 0 or deletions > 0:
         return "modified"
 
+    # Unknown status:
+    # treat the file as modified so changed-file review
+    # does not accidentally exclude it.
     return "modified"
 
 
@@ -225,7 +260,9 @@ def build_changed_files(pr_files):
         changed[filename] = {
             "status": normalize_status(item),
             "previous_filename": (
-                normalize_path(item["previous_filename"])
+                normalize_path(
+                    item["previous_filename"]
+                )
                 if item.get("previous_filename")
                 else None
             ),
@@ -234,7 +271,10 @@ def build_changed_files(pr_files):
     return changed
 
 
-def finding_matches_file(finding, changed_files):
+def finding_matches_file(
+    finding,
+    changed_files,
+):
     finding_path = normalize_path(
         finding.get("path", "")
     )
@@ -242,8 +282,12 @@ def finding_matches_file(finding, changed_files):
     if finding_path in changed_files:
         return finding_path
 
-    # Handle possible repository-relative prefixes.
+    # --------------------------------------------------------
+    # Handle path representation differences.
+    # --------------------------------------------------------
+
     for changed_path in changed_files:
+
         normalized_changed = normalize_path(
             changed_path
         )
@@ -288,14 +332,27 @@ def filter_findings(
         if matched_path is None:
             continue
 
-        file_info = changed_files[matched_path]
+        file_info = changed_files[
+            matched_path
+        ]
 
         status = file_info["status"]
+
+        # ----------------------------------------------------
+        # changed_files / file
+        #
+        # Include:
+        #   added
+        #   modified
+        #   renamed
+        #   deleted
+        # ----------------------------------------------------
 
         if filter_mode in {
             "changed_files",
             "file",
         }:
+
             if status not in CHANGED_FILE_STATUSES:
                 continue
 
@@ -305,6 +362,12 @@ def filter_findings(
             filtered.append(finding)
 
             continue
+
+        # ----------------------------------------------------
+        # added
+        #
+        # Only newly-added files.
+        # ----------------------------------------------------
 
         if filter_mode == "added":
 
@@ -317,6 +380,16 @@ def filter_findings(
             filtered.append(finding)
 
             continue
+
+        # ----------------------------------------------------
+        # diff_context
+        #
+        # The custom reporter currently receives reviewdog's
+        # complete local output, not structured diff context.
+        #
+        # Therefore changed files are used as the available
+        # scope here.
+        # ----------------------------------------------------
 
         if filter_mode == "diff_context":
 
@@ -353,14 +426,13 @@ def deduplicate_findings(findings):
             continue
 
         seen.add(key)
-
         result.append(finding)
 
     return result
 
 
 # ------------------------------------------------------------
-# Forgejo comments
+# Forgejo review comments
 # ------------------------------------------------------------
 
 def build_review_comment(finding):
@@ -387,10 +459,17 @@ def build_review_comment(finding):
     if line < 1:
         return None
 
-    status = finding.get("_status")
+    status = finding.get(
+        "_status"
+    )
 
-    # Deleted files cannot use new_position because
-    # the line does not exist in the new revision.
+    # --------------------------------------------------------
+    # Deleted files
+    #
+    # The finding points to the old revision, so it cannot be
+    # represented as a normal new-position inline comment.
+    # --------------------------------------------------------
+
     if status == "deleted":
         return None
 
