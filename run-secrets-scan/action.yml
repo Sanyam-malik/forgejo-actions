@@ -1,0 +1,185 @@
+name: Run Secrets Scan
+description: Run a Gitleaks secrets scan and produce a JSON report
+
+inputs:
+  scan_path:
+    description: Path to scan.
+    required: false
+    default: .
+
+  report_path:
+    description: Path to write the Gitleaks JSON report to. Defaults to a file under the runner's temp directory.
+    required: false
+    default: ""
+
+  gitleaks_version:
+    description: Gitleaks version to install if gitleaks is not already on PATH.
+    required: false
+    default: latest
+
+  gitleaks_install_dir:
+    description: Directory to install the Gitleaks binary into, if an install is needed. Must be on PATH, or added to PATH by the install.
+    required: false
+    default: /usr/local/bin
+
+  pkg_cache:
+    description: Package cache host or base URL to install Gitleaks through, if an install is needed.
+    required: false
+    default: ""
+
+  fail_build:
+    description: >
+      If "true", this action fails itself (exit 1) when secret_count is
+      greater than zero, or when the scan errors out. If "false" (default),
+      the action only reports - the caller decides whether to fail the
+      build based on the outputs.
+    required: false
+    default: "false"
+
+outputs:
+  report:
+    description: Path to the Gitleaks JSON report
+    value: ${{ steps.scan.outputs.report }}
+
+  secret_count:
+    description: Number of secrets detected
+    value: ${{ steps.scan.outputs.secret_count }}
+
+  scan_error:
+    description: >
+      "true" if Gitleaks failed to complete the scan (as opposed to completing
+      the scan and finding secrets). Callers should treat this as a hard
+      failure rather than trusting secret_count, since the report may be
+      incomplete.
+    value: ${{ steps.scan.outputs.scan_error }}
+
+  gitleaks_version:
+    description: The Gitleaks version that was used for the scan
+    value: ${{ steps.gitleaks-version.outputs.version }}
+
+runs:
+  using: composite
+
+  steps:
+    # ------------------------------------------------------------
+    # Ensure Gitleaks is installed. Adjust the path below to
+    # wherever the install-gitleaks composite action lives in this
+    # repo.
+    # ------------------------------------------------------------
+    - name: Ensure Gitleaks is installed
+      shell: bash
+      run: |
+        if ! command -v gitleaks >/dev/null 2>&1; then
+          echo "gitleaks_missing=true" >> "${GITHUB_ENV}"
+        else
+          echo "gitleaks_missing=false" >> "${GITHUB_ENV}"
+        fi
+
+    - name: Install Gitleaks
+      if: env.gitleaks_missing == 'true'
+      uses: ./.forgejo/actions/install-gitleaks
+      with:
+        version: ${{ inputs.gitleaks_version }}
+        install_dir: ${{ inputs.gitleaks_install_dir }}
+        pkg_cache: ${{ inputs.pkg_cache }}
+
+    - id: gitleaks-version
+      name: Record Gitleaks version
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if ! command -v gitleaks >/dev/null 2>&1; then
+          echo "::error::gitleaks is not on PATH after the install step."
+          exit 1
+        fi
+
+        VERSION="$(gitleaks version 2>/dev/null | head -n1 | sed -E 's/^v//')"
+        echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+    - id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.scan_path }}
+        REPORT_PATH: ${{ inputs.report_path }}
+        FAIL_BUILD: ${{ inputs.fail_build }}
+      run: |
+        set -uo pipefail
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error::jq is not on PATH. It is required to parse the Gitleaks report."
+          exit 1
+        fi
+
+        REPORT="${REPORT_PATH}"
+        if [[ -z "${REPORT}" ]]; then
+          REPORT="${RUNNER_TEMP}/gitleaks.json"
+        fi
+
+        echo "============================================================"
+        echo "Running Gitleaks secrets scan"
+        echo "============================================================"
+        echo "Scan path   : ${SCAN_PATH}"
+        echo "Report path : ${REPORT}"
+
+        mkdir -p "$(dirname "${REPORT}")"
+        rm -f "${REPORT}"
+
+        # ------------------------------------------------------------
+        # Gitleaks exit codes: 0 = no leaks found, 1 = leaks found,
+        # anything else = the scan itself errored out (bad path,
+        # invalid config, etc). We must not conflate "leaks found"
+        # with "the scanner broke" - the latter should be visible,
+        # not silently reported as a clean/near-clean scan.
+        # ------------------------------------------------------------
+        GITLEAKS_EXIT_CODE=0
+
+        gitleaks detect \
+          --source "${SCAN_PATH}" \
+          --no-banner \
+          --report-format json \
+          --report-path "${REPORT}" \
+          || GITLEAKS_EXIT_CODE=$?
+
+        SCAN_ERROR="false"
+        if [[ "${GITLEAKS_EXIT_CODE}" -gt 1 ]]; then
+          echo "::error::Gitleaks exited with code ${GITLEAKS_EXIT_CODE}, which indicates a scan error rather than findings."
+          SCAN_ERROR="true"
+        fi
+
+        if [[ ! -f "${REPORT}" ]]; then
+          echo "[]" > "${REPORT}"
+        fi
+
+        SECRET_COUNT="$(jq 'length' "${REPORT}" 2>/dev/null || echo 0)"
+
+        echo "Secrets found: ${SECRET_COUNT}"
+
+        if [[ "${GITLEAKS_EXIT_CODE}" -eq 1 ]]; then
+          echo "::warning::Gitleaks detected ${SECRET_COUNT} potential secret(s)."
+        fi
+
+        echo "report=${REPORT}" >> "${GITHUB_OUTPUT}"
+        echo "secret_count=${SECRET_COUNT}" >> "${GITHUB_OUTPUT}"
+        echo "scan_error=${SCAN_ERROR}" >> "${GITHUB_OUTPUT}"
+
+        # ------------------------------------------------------------
+        # This action only fails itself when explicitly asked to via
+        # fail_build. Otherwise it always reports and lets the caller
+        # decide, consistent with run-vulnerability-scan.
+        # ------------------------------------------------------------
+        if [[ "${FAIL_BUILD}" != "true" ]]; then
+          exit 0
+        fi
+
+        if [[ "${SCAN_ERROR}" == "true" ]]; then
+          echo "::error::Secrets scan failed and fail_build is true."
+          exit 1
+        fi
+
+        if [[ "${SECRET_COUNT}" -gt 0 ]]; then
+          echo "::error::Found ${SECRET_COUNT} secret(s) in ${SCAN_PATH}"
+          exit 1
+        fi
+
+        echo "✓ No secrets found."

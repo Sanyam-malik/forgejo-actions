@@ -52,14 +52,19 @@ inputs:
     required: false
     default: "true"
 
+  post_pr_comment:
+    description: Post (or update) a pull request comment summarizing the scan results.
+    required: false
+    default: "true"
+
 outputs:
   trivy_version:
     description: The Trivy version that was installed.
-    value: ${{ steps.install-trivy.outputs.version }}
+    value: ${{ steps.setup-trivy.outputs.version }}
 
   gitleaks_version:
     description: The Gitleaks version that was installed.
-    value: ${{ steps.install-gitleaks.outputs.version }}
+    value: ${{ steps.setup-gitleaks.outputs.version }}
 
 runs:
   using: composite
@@ -112,642 +117,37 @@ runs:
         echo "Security scan dependencies are ready."
 
     # ============================================================
-    # Install Trivy
-    # ============================================================
-    - id: install-trivy
-      name: Install Trivy
-      shell: bash
-      env:
-        REQUESTED_VERSION: ${{ inputs.trivy_version }}
-        INSTALL_DIR: ${{ inputs.trivy_install_dir }}
-        PKG_CACHE: ${{ inputs.pkg_cache }}
-      run: |
-        set -euo pipefail
-
-        echo "============================================================"
-        echo "Installing Trivy"
-        echo "============================================================"
-        echo "Requested version : ${REQUESTED_VERSION}"
-        echo "Install directory : ${INSTALL_DIR}"
-
-        # ----------------------------------------------------------
-        # Skip if requested version already exists
-        # ----------------------------------------------------------
-        if command -v trivy >/dev/null 2>&1; then
-          CURRENT_VERSION="$(
-            trivy --version |
-              head -n1 |
-              awk '{print $2}'
-          )"
-
-          if [[ "${REQUESTED_VERSION}" == "latest" ||
-                "${REQUESTED_VERSION#v}" == "${CURRENT_VERSION#v}" ]]; then
-
-            echo "Trivy ${CURRENT_VERSION} is already installed."
-            echo "version=${CURRENT_VERSION}" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          echo "Trivy ${CURRENT_VERSION} is installed."
-          echo "Requested version: ${REQUESTED_VERSION}"
-          echo "Reinstalling..."
-        fi
-
-        # ----------------------------------------------------------
-        # Resolve OS
-        # ----------------------------------------------------------
-        OS="$(uname -s)"
-
-        case "${OS}" in
-          Linux)
-            PLATFORM="Linux"
-            ;;
-
-          Darwin)
-            PLATFORM="macOS"
-            ;;
-
-          *)
-            echo "::error::Unsupported OS: ${OS}"
-            exit 1
-            ;;
-        esac
-
-        # ----------------------------------------------------------
-        # Resolve architecture
-        # ----------------------------------------------------------
-        case "$(uname -m)" in
-          x86_64|amd64)
-            ARCH="64bit"
-            ;;
-
-          aarch64|arm64)
-            ARCH="ARM64"
-            ;;
-
-          armv7l|armv6l)
-            ARCH="ARM"
-            ;;
-
-          *)
-            echo "::error::Unsupported architecture: $(uname -m)"
-            exit 1
-            ;;
-        esac
-
-        echo "Platform           : ${PLATFORM}"
-        echo "Architecture       : ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Configure release URLs
-        #
-        # pkg-cache:
-        #   <cache>/github.com/aquasecurity/trivy
-        #   <cache>/api.github.com/repos/aquasecurity/trivy
-        #
-        # official:
-        #   https://github.com/aquasecurity/trivy
-        #   https://api.github.com/repos/aquasecurity/trivy
-        # ----------------------------------------------------------
-        if [[ -n "${PKG_CACHE}" ]]; then
-          PKG_CACHE_BASE="${PKG_CACHE}"
-
-          case "${PKG_CACHE_BASE}" in
-            http://*|https://*)
-              ;;
-
-            *)
-              PKG_CACHE_BASE="https://${PKG_CACHE_BASE}"
-              ;;
-          esac
-
-          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
-
-          BASE_URL="${PKG_CACHE_BASE}/github.com/aquasecurity/trivy"
-          API_BASE_URL="${PKG_CACHE_BASE}/api.github.com/repos/aquasecurity/trivy"
-
-          SOURCE="pkg-cache"
-        else
-          BASE_URL="https://github.com/aquasecurity/trivy"
-          API_BASE_URL="https://api.github.com/repos/aquasecurity/trivy"
-
-          SOURCE="official GitHub"
-        fi
-
-        echo "Release source     : ${SOURCE}"
-        echo "Release base URL   : ${BASE_URL}"
-
-        # ----------------------------------------------------------
-        # Resolve version
-        # ----------------------------------------------------------
-        if [[ "${REQUESTED_VERSION}" == "latest" ]]; then
-          echo "Resolving latest Trivy release..."
-
-          VERSION="$(
-            curl -fsSL \
-              --retry 5 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              "${API_BASE_URL}/releases/latest" |
-              grep '"tag_name"' |
-              head -n1 |
-              sed -E 's/.*"v?([^"]+)".*/\1/'
-          )"
-
-          if [[ -z "${VERSION}" ]]; then
-            echo "::error::Unable to resolve latest Trivy version."
-            exit 1
-          fi
-        else
-          VERSION="${REQUESTED_VERSION#v}"
-        fi
-
-        echo "Resolved version   : ${VERSION}"
-        echo "Platform           : ${PLATFORM}"
-        echo "Architecture       : ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Download
-        # ----------------------------------------------------------
-        TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "${TMP_DIR}"' EXIT
-
-        ASSET="trivy_${VERSION}_${PLATFORM}-${ARCH}.tar.gz"
-        URL="${BASE_URL}/releases/download/v${VERSION}/${ASSET}"
-        OUTPUT="${TMP_DIR}/${ASSET}"
-
-        echo ""
-        echo "Downloading Trivy"
-        echo "  Version           : ${VERSION}"
-        echo "  Asset             : ${ASSET}"
-        echo "  Source            : ${SOURCE}"
-        echo "  URL               : ${URL}"
-
-        curl \
-          -fL \
-          --retry 5 \
-          --retry-delay 5 \
-          --retry-all-errors \
-          --show-error \
-          --progress-bar \
-          "${URL}" \
-          -o "${OUTPUT}"
-
-        if [[ ! -s "${OUTPUT}" ]]; then
-          echo "::error::Trivy download is empty."
-          exit 1
-        fi
-
-        DOWNLOAD_SIZE="$(
-          du -h "${OUTPUT}" |
-            awk '{print $1}'
-        )"
-
-        echo "  Downloaded size   : ${DOWNLOAD_SIZE}"
-
-        # ----------------------------------------------------------
-        # Extract
-        # ----------------------------------------------------------
-        echo "Extracting Trivy..."
-
-        tar \
-          -xzf "${OUTPUT}" \
-          -C "${TMP_DIR}" \
-          trivy
-
-        if [[ ! -f "${TMP_DIR}/trivy" ]]; then
-          echo "::error::Trivy binary was not found after extraction."
-          exit 1
-        fi
-
-        # ----------------------------------------------------------
-        # Install
-        # ----------------------------------------------------------
-        mkdir -p "${INSTALL_DIR}"
-
-        if [[ -w "${INSTALL_DIR}" ]]; then
-          mv \
-            "${TMP_DIR}/trivy" \
-            "${INSTALL_DIR}/trivy"
-        else
-          sudo mv \
-            "${TMP_DIR}/trivy" \
-            "${INSTALL_DIR}/trivy"
-        fi
-
-        chmod +x "${INSTALL_DIR}/trivy"
-
-        # ----------------------------------------------------------
-        # PATH
-        # ----------------------------------------------------------
-        echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
-        export PATH="${INSTALL_DIR}:${PATH}"
-
-        # ----------------------------------------------------------
-        # Verify
-        # ----------------------------------------------------------
-        if ! command -v trivy >/dev/null 2>&1; then
-          echo "::error::Trivy installation completed but binary is not on PATH."
-          exit 1
-        fi
-
-        INSTALLED_VERSION="$(
-          "${INSTALL_DIR}/trivy" --version |
-            head -n1 |
-            awk '{print $2}'
-        )"
-
-        if [[ -z "${INSTALLED_VERSION}" ]]; then
-          echo "::error::Unable to determine installed Trivy version."
-          exit 1
-        fi
-
-        echo ""
-        echo "============================================================"
-        echo "Trivy installation complete"
-        echo "============================================================"
-        echo "Requested version : ${REQUESTED_VERSION}"
-        echo "Installed version : ${INSTALLED_VERSION}"
-        echo "Platform          : ${PLATFORM}"
-        echo "Architecture      : ${ARCH}"
-        echo "Source            : ${SOURCE}"
-        echo "Install path      : ${INSTALL_DIR}/trivy"
-        echo "Detected path     : $(command -v trivy)"
-        echo "============================================================"
-
-        echo "version=${INSTALLED_VERSION}" >> "${GITHUB_OUTPUT}"
-
-    # ============================================================
-    # Install Gitleaks
-    # ============================================================
-    - id: install-gitleaks
-      name: Install Gitleaks
-      shell: bash
-      env:
-        REQUESTED_VERSION: ${{ inputs.gitleaks_version }}
-        INSTALL_DIR: ${{ inputs.gitleaks_install_dir }}
-        PKG_CACHE: ${{ inputs.pkg_cache }}
-      run: |
-        set -euo pipefail
-
-        echo "============================================================"
-        echo "Installing Gitleaks"
-        echo "============================================================"
-        echo "Requested version : ${REQUESTED_VERSION}"
-        echo "Install directory : ${INSTALL_DIR}"
-
-        # ----------------------------------------------------------
-        # Skip if requested version already exists
-        # ----------------------------------------------------------
-        if command -v gitleaks >/dev/null 2>&1; then
-          CURRENT_VERSION="$(
-            gitleaks version 2>/dev/null |
-              head -n1 |
-              sed -E 's/^v//'
-          )"
-
-          if [[ "${REQUESTED_VERSION}" == "latest" ||
-                "${REQUESTED_VERSION#v}" == "${CURRENT_VERSION#v}" ]]; then
-
-            echo "Gitleaks ${CURRENT_VERSION} is already installed."
-            echo "version=${CURRENT_VERSION}" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          echo "Gitleaks ${CURRENT_VERSION} is installed."
-          echo "Requested version: ${REQUESTED_VERSION}"
-          echo "Reinstalling..."
-        fi
-
-        # ----------------------------------------------------------
-        # Resolve OS
-        # ----------------------------------------------------------
-        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-
-        case "${OS}" in
-          linux|darwin)
-            ;;
-
-          *)
-            echo "::error::Unsupported OS: ${OS}"
-            exit 1
-            ;;
-        esac
-
-        # ----------------------------------------------------------
-        # Resolve architecture
-        # ----------------------------------------------------------
-        case "$(uname -m)" in
-          x86_64|amd64)
-            ARCH="x64"
-            ;;
-
-          aarch64|arm64)
-            ARCH="arm64"
-            ;;
-
-          armv7l)
-            ARCH="armv7"
-            ;;
-
-          *)
-            echo "::error::Unsupported architecture: $(uname -m)"
-            exit 1
-            ;;
-        esac
-
-        echo "Platform           : ${OS}"
-        echo "Architecture       : ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Configure release URLs
-        #
-        # pkg-cache:
-        #   <cache>/github.com/gitleaks/gitleaks
-        #   <cache>/api.github.com/repos/gitleaks/gitleaks
-        #
-        # official:
-        #   https://github.com/gitleaks/gitleaks
-        #   https://api.github.com/repos/gitleaks/gitleaks
-        # ----------------------------------------------------------
-        if [[ -n "${PKG_CACHE}" ]]; then
-          PKG_CACHE_BASE="${PKG_CACHE}"
-
-          case "${PKG_CACHE_BASE}" in
-            http://*|https://*)
-              ;;
-
-            *)
-              PKG_CACHE_BASE="https://${PKG_CACHE_BASE}"
-              ;;
-          esac
-
-          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
-
-          BASE_URL="${PKG_CACHE_BASE}/github.com/gitleaks/gitleaks"
-          API_BASE_URL="${PKG_CACHE_BASE}/api.github.com/repos/gitleaks/gitleaks"
-
-          SOURCE="pkg-cache"
-        else
-          BASE_URL="https://github.com/gitleaks/gitleaks"
-          API_BASE_URL="https://api.github.com/repos/gitleaks/gitleaks"
-
-          SOURCE="official GitHub"
-        fi
-
-        echo "Release source     : ${SOURCE}"
-        echo "Release base URL   : ${BASE_URL}"
-
-        # ----------------------------------------------------------
-        # Resolve version
-        # ----------------------------------------------------------
-        if [[ "${REQUESTED_VERSION}" == "latest" ]]; then
-          echo "Resolving latest Gitleaks release..."
-
-          VERSION="$(
-            curl -fsSL \
-              --retry 5 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              "${API_BASE_URL}/releases/latest" |
-              grep '"tag_name"' |
-              head -n1 |
-              sed -E 's/.*"v?([^"]+)".*/\1/'
-          )"
-
-          if [[ -z "${VERSION}" ]]; then
-            echo "::error::Unable to resolve latest Gitleaks version."
-            exit 1
-          fi
-        else
-          VERSION="${REQUESTED_VERSION#v}"
-        fi
-
-        echo "Resolved version   : ${VERSION}"
-        echo "Platform           : ${OS}"
-        echo "Architecture       : ${ARCH}"
-
-        # ----------------------------------------------------------
-        # Download
-        # ----------------------------------------------------------
-        TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "${TMP_DIR}"' EXIT
-
-        ASSET="gitleaks_${VERSION}_${OS}_${ARCH}.tar.gz"
-        URL="${BASE_URL}/releases/download/v${VERSION}/${ASSET}"
-        OUTPUT="${TMP_DIR}/${ASSET}"
-
-        echo ""
-        echo "Downloading Gitleaks"
-        echo "  Version           : ${VERSION}"
-        echo "  Asset             : ${ASSET}"
-        echo "  Source            : ${SOURCE}"
-        echo "  URL               : ${URL}"
-
-        curl \
-          -fL \
-          --retry 5 \
-          --retry-delay 5 \
-          --retry-all-errors \
-          --show-error \
-          --progress-bar \
-          "${URL}" \
-          -o "${OUTPUT}"
-
-        if [[ ! -s "${OUTPUT}" ]]; then
-          echo "::error::Gitleaks download is empty."
-          exit 1
-        fi
-
-        DOWNLOAD_SIZE="$(
-          du -h "${OUTPUT}" |
-            awk '{print $1}'
-        )"
-
-        echo "  Downloaded size   : ${DOWNLOAD_SIZE}"
-
-        # ----------------------------------------------------------
-        # Extract
-        # ----------------------------------------------------------
-        echo "Extracting Gitleaks..."
-
-        tar \
-          -xzf "${OUTPUT}" \
-          -C "${TMP_DIR}" \
-          gitleaks
-
-        if [[ ! -f "${TMP_DIR}/gitleaks" ]]; then
-          echo "::error::Gitleaks binary was not found after extraction."
-          exit 1
-        fi
-
-        # ----------------------------------------------------------
-        # Install
-        # ----------------------------------------------------------
-        mkdir -p "${INSTALL_DIR}"
-
-        if [[ -w "${INSTALL_DIR}" ]]; then
-          mv \
-            "${TMP_DIR}/gitleaks" \
-            "${INSTALL_DIR}/gitleaks"
-        else
-          sudo mv \
-            "${TMP_DIR}/gitleaks" \
-            "${INSTALL_DIR}/gitleaks"
-        fi
-
-        chmod +x "${INSTALL_DIR}/gitleaks"
-
-        # ----------------------------------------------------------
-        # PATH
-        # ----------------------------------------------------------
-        echo "${INSTALL_DIR}" >> "${GITHUB_PATH}"
-        export PATH="${INSTALL_DIR}:${PATH}"
-
-        # ----------------------------------------------------------
-        # Verify
-        # ----------------------------------------------------------
-        if ! command -v gitleaks >/dev/null 2>&1; then
-          echo "::error::Gitleaks installation completed but binary is not on PATH."
-          exit 1
-        fi
-
-        INSTALLED_VERSION="$(
-          gitleaks version 2>/dev/null |
-            head -n1 |
-            sed -E 's/^v//'
-        )"
-
-        if [[ -z "${INSTALLED_VERSION}" ]]; then
-          echo "::error::Unable to determine installed Gitleaks version."
-          exit 1
-        fi
-
-        echo ""
-        echo "============================================================"
-        echo "Gitleaks installation complete"
-        echo "============================================================"
-        echo "Requested version : ${REQUESTED_VERSION}"
-        echo "Installed version : ${INSTALLED_VERSION}"
-        echo "Platform          : ${OS}"
-        echo "Architecture      : ${ARCH}"
-        echo "Source            : ${SOURCE}"
-        echo "Install path      : ${INSTALL_DIR}/gitleaks"
-        echo "Detected path     : $(command -v gitleaks)"
-        echo "============================================================"
-
-        echo "version=${INSTALLED_VERSION}" >> "${GITHUB_OUTPUT}"
-
-    # ============================================================
     # Secrets scan
+    #
+    # Delegates to the shared run-secrets-scan action instead of
+    # inlining Gitleaks invocation/report-parsing here.
     # ============================================================
     - id: secrets-scan
       name: Secrets scan
-      shell: bash
-      env:
-        SCAN_PATH: ${{ inputs.scan_path }}
-      run: |
-        set -uo pipefail
-
-        REPORT="${RUNNER_TEMP}/gitleaks.json"
-
-        echo "============================================================"
-        echo "Running Gitleaks secrets scan"
-        echo "============================================================"
-        echo "Scan path: ${SCAN_PATH}"
-
-        rm -f "${REPORT}"
-
-        GITLEAKS_EXIT_CODE=0
-
-        gitleaks detect \
-          --source "${SCAN_PATH}" \
-          --no-banner \
-          --report-format json \
-          --report-path "${REPORT}" \
-          || GITLEAKS_EXIT_CODE=$?
-
-        if [[ ! -f "${REPORT}" ]]; then
-          echo "[]" > "${REPORT}"
-        fi
-
-        SECRET_COUNT="$(
-          jq 'length' "${REPORT}" 2>/dev/null || echo 0
-        )"
-
-        echo "Secrets found: ${SECRET_COUNT}"
-
-        if [[ "${GITLEAKS_EXIT_CODE}" -ne 0 ]]; then
-          echo "::warning::Gitleaks detected ${SECRET_COUNT} potential secret(s)."
-        fi
-
-        # Do not fail here.
-        # The summary step must always execute.
-        exit 0
+      uses: ./.forgejo/actions/run-secrets-scan
+      with:
+        scan_path: ${{ inputs.scan_path }}
+        gitleaks_version: ${{ inputs.gitleaks_version }}
+        gitleaks_install_dir: ${{ inputs.gitleaks_install_dir }}
+        pkg_cache: ${{ inputs.pkg_cache }}
 
     # ============================================================
     # Dependency / vulnerability scan
+    #
+    # Delegates to the shared run-vulnerability-scan action instead
+    # of inlining Trivy invocation/report-parsing here.
     # ============================================================
     - id: dependency-scan
       name: Dependency vulnerability scan
-      shell: bash
-      env:
-        SCAN_PATH: ${{ inputs.scan_path }}
-        SEVERITY: ${{ inputs.severity }}
-        IGNORE_UNFIXED: ${{ inputs.ignore_unfixed }}
-      run: |
-        set -uo pipefail
-
-        REPORT="${RUNNER_TEMP}/trivy.json"
-
-        echo "============================================================"
-        echo "Running Trivy dependency vulnerability scan"
-        echo "============================================================"
-        echo "Scan path: ${SCAN_PATH}"
-        echo "Severity: ${SEVERITY}"
-
-        rm -f "${REPORT}"
-
-        TRIVY_ARGS=(
-          fs
-          --scanners vuln
-          --severity "${SEVERITY}"
-          --format json
-          --output "${REPORT}"
-        )
-
-        if [[ "${IGNORE_UNFIXED}" == "true" ]]; then
-          TRIVY_ARGS+=(--ignore-unfixed)
-        fi
-
-        TRIVY_EXIT_CODE=0
-
-        trivy \
-          "${TRIVY_ARGS[@]}" \
-          "${SCAN_PATH}" \
-          || TRIVY_EXIT_CODE=$?
-
-        if [[ ! -f "${REPORT}" ]]; then
-          echo '{"Results":[]}' > "${REPORT}"
-        fi
-
-        VULNERABILITY_COUNT="$(
-          jq '
-            [
-              .Results[]?.Vulnerabilities[]?
-            ] | length
-          ' "${REPORT}" 2>/dev/null || echo 0
-        )"
-
-        echo "Vulnerabilities found: ${VULNERABILITY_COUNT}"
-
-        if [[ "${TRIVY_EXIT_CODE}" -ne 0 ]]; then
-          echo "::warning::Trivy detected ${VULNERABILITY_COUNT} vulnerability/vulnerabilities."
-        fi
-
-        # Do not fail here.
-        # The summary step must always execute.
-        exit 0
+      uses: ./.forgejo/actions/run-vulnerability-scan
+      with:
+        scan_type: fs
+        target: ${{ inputs.scan_path }}
+        severity: ${{ inputs.severity }}
+        ignore_unfixed: ${{ inputs.ignore_unfixed }}
+        trivy_version: ${{ inputs.trivy_version }}
+        trivy_install_dir: ${{ inputs.trivy_install_dir }}
+        pkg_cache: ${{ inputs.pkg_cache }}
 
     # ============================================================
     # Security summary
@@ -760,38 +160,21 @@ runs:
         SCAN_PATH: ${{ inputs.scan_path }}
         FAIL_ON_SECRETS: ${{ inputs.fail_on_secrets }}
         FAIL_ON_VULNERABILITIES: ${{ inputs.fail_on_vulnerabilities }}
+        GITLEAKS_REPORT: ${{ steps.secrets-scan.outputs.report }}
+        SECRET_COUNT: ${{ steps.secrets-scan.outputs.secret_count }}
+        GITLEAKS_SCAN_ERROR: ${{ steps.secrets-scan.outputs.scan_error }}
+        TRIVY_REPORT: ${{ steps.dependency-scan.outputs.report }}
+        VULNERABILITY_COUNT: ${{ steps.dependency-scan.outputs.vulnerability_count }}
+        TRIVY_SCAN_ERROR: ${{ steps.dependency-scan.outputs.scan_error }}
       run: |
         set -uo pipefail
 
-        GITLEAKS_REPORT="${RUNNER_TEMP}/gitleaks.json"
-        TRIVY_REPORT="${RUNNER_TEMP}/trivy.json"
-
         SUMMARY="${RUNNER_TEMP}/security-summary.md"
 
-        SECRET_COUNT=0
-        VULNERABILITY_COUNT=0
-
-        # ----------------------------------------------------------
-        # Read secret count
-        # ----------------------------------------------------------
-        if [[ -f "${GITLEAKS_REPORT}" ]]; then
-          SECRET_COUNT="$(
-            jq 'length' "${GITLEAKS_REPORT}" 2>/dev/null || echo 0
-          )"
-        fi
-
-        # ----------------------------------------------------------
-        # Read vulnerability count
-        # ----------------------------------------------------------
-        if [[ -f "${TRIVY_REPORT}" ]]; then
-          VULNERABILITY_COUNT="$(
-            jq '
-              [
-                .Results[]?.Vulnerabilities[]?
-              ] | length
-            ' "${TRIVY_REPORT}" 2>/dev/null || echo 0
-          )"
-        fi
+        # Counts and report paths come directly from the scan actions'
+        # outputs above - no need to re-derive or re-parse them here.
+        SECRET_COUNT="${SECRET_COUNT:-0}"
+        VULNERABILITY_COUNT="${VULNERABILITY_COUNT:-0}"
 
         TOTAL_COUNT=$((SECRET_COUNT + VULNERABILITY_COUNT))
 
@@ -799,14 +182,25 @@ runs:
         # Create summary
         # ----------------------------------------------------------
         {
+          echo "<!-- security-scan-summary -->"
           echo "## 🔐 Security Scan Summary"
           echo ""
-          
+
           if [ -n "${SCAN_PATH}" ] && [ "${SCAN_PATH}" != "." ]; then
           echo "**Scan path:** \`${SCAN_PATH}\`"
           echo ""
           fi
-          
+
+          if [[ "${GITLEAKS_SCAN_ERROR}" == "true" ]]; then
+            echo "> ⚠️ Gitleaks did not complete successfully - the secret count below may be incomplete."
+            echo ""
+          fi
+
+          if [[ "${TRIVY_SCAN_ERROR}" == "true" ]]; then
+            echo "> ⚠️ Trivy did not complete successfully - the vulnerability count below may be incomplete."
+            echo ""
+          fi
+
           echo "| Scanner | Severity | Issue | Location | Package | Installed | Fixed |"
           echo "|---|---|---|---|---|---|---|"
         } > "${SUMMARY}"
@@ -904,6 +298,11 @@ runs:
         # ----------------------------------------------------------
         FAILED=0
 
+        if [[ "${GITLEAKS_SCAN_ERROR}" == "true" || "${TRIVY_SCAN_ERROR}" == "true" ]]; then
+          echo "::error::One or more scanners failed to complete; treating this as a failed security scan."
+          FAILED=1
+        fi
+
         if [[ "${FAIL_ON_SECRETS}" == "true" &&
               "${SECRET_COUNT}" -gt 0 ]]; then
 
@@ -927,98 +326,14 @@ runs:
 
     # ============================================================
     # Pull request comment
+    #
+    # Delegates to the shared, generic post-comment action rather
+    # than inlining Forgejo API calls here. The marker keeps this to
+    # a single upserted comment per PR instead of one per run.
     # ============================================================
     - name: Comment security scan summary on pull request
-      if: always()
-      shell: bash
-      env:
-        API_TOKEN: ${{ github.token }}
-        API_URL: ${{ github.api_url }}
-        SERVER_URL: ${{ github.server_url }}
-        REPOSITORY: ${{ github.repository }}
-        REF_NAME: ${{ github.ref_name }}
-        HEAD_REF: ${{ github.head_ref }}
-        EVENT_NAME: ${{ github.event_name }}
-        EVENT_PATH: ${{ github.event_path }}
-      run: |
-        set -euo pipefail
-
-        SUMMARY="${RUNNER_TEMP}/security-summary.md"
-
-        if [[ -z "${API_TOKEN}" ]]; then
-          echo "::warning::Skipping pull request comment because no API token is available."
-          exit 0
-        fi
-
-        if [[ ! -s "${SUMMARY}" ]]; then
-          echo "::warning::Skipping pull request comment because the security summary is unavailable."
-          exit 0
-        fi
-
-        API_BASE="${API_URL:-}"
-        if [[ -z "${API_BASE}" ]]; then
-          API_BASE="${SERVER_URL%/}/api/v1"
-        fi
-        API_BASE="${API_BASE%/}"
-
-        PR_NUMBER=""
-        if [[ "${EVENT_NAME}" == "pull_request" &&
-              -f "${EVENT_PATH}" ]]; then
-          PR_NUMBER="$(
-            jq -r '.number // empty' "${EVENT_PATH}"
-          )"
-        fi
-
-        if [[ -z "${PR_NUMBER}" ]]; then
-          BRANCH="${HEAD_REF:-${REF_NAME}}"
-          OWNER="${REPOSITORY%%/*}"
-
-          if [[ -z "${BRANCH}" || -z "${OWNER}" ||
-                "${OWNER}" == "${REPOSITORY}" ]]; then
-            echo "No branch context available; skipping pull request comment."
-            exit 0
-          fi
-
-          PULLS_URL="${API_BASE}/repos/${REPOSITORY}/pulls"
-          if ! PULLS_RESPONSE="$(
-            curl -fsS \
-              --retry 2 \
-              -H "Authorization: Bearer ${API_TOKEN}" \
-              -H "Accept: application/json" \
-              --get \
-              --data-urlencode "state=open" \
-              --data-urlencode "head=${OWNER}:${BRANCH}" \
-              "${PULLS_URL}"
-          )"; then
-            echo "::warning::Unable to determine whether branch '${BRANCH}' has an open pull request."
-            exit 0
-          fi
-
-          PR_NUMBER="$(
-            jq -r '.[0].number // empty' <<< "${PULLS_RESPONSE}"
-          )"
-        fi
-
-        if [[ -z "${PR_NUMBER}" ]]; then
-          echo "No open pull request found for the scanned branch."
-          exit 0
-        fi
-
-        COMMENT_BODY="$(
-          jq -Rs '{body: .}' < "${SUMMARY}"
-        )"
-        COMMENTS_URL="${API_BASE}/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments"
-
-        if ! curl -fsS \
-          --retry 2 \
-          -X POST \
-          -H "Authorization: Bearer ${API_TOKEN}" \
-          -H "Accept: application/json" \
-          -H "Content-Type: application/json" \
-          --data "${COMMENT_BODY}" \
-          "${COMMENTS_URL}" >/dev/null; then
-          echo "::warning::Unable to post the security scan summary to pull request #${PR_NUMBER}."
-          exit 0
-        fi
-
-        echo "Posted security scan summary to pull request #${PR_NUMBER}."
+      if: always() && inputs.post_pr_comment == 'true'
+      uses: ./.forgejo/actions/post-comment
+      with:
+        body_path: ${{ runner.temp }}/security-summary.md
+        marker: "<!-- security-scan-summary -->"
