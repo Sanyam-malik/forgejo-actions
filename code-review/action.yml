@@ -247,13 +247,12 @@ runs:
         echo "Filter mode will be handled by custom Forgejo reporter"
 
         reviewdog \
-          -conf=.reviewdog.generated.yml \
-          -reporter=local \
-          -level="$REVIEWDOG_LEVEL" \
-          -filter-mode=nofilter \
-          -fail-level=none \
-          -tee \
-          > reviewdog-results.txt
+        -conf=.reviewdog.generated.yml \
+        -reporter=local \
+        -level="$REVIEWDOG_LEVEL" \
+        -filter-mode=nofilter \
+        -fail-level=none \
+        > reviewdog-results.txt 2>&1
 
     # ============================================================
     # Custom Forgejo reporter
