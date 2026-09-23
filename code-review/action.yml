@@ -174,7 +174,6 @@ runs:
       uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
       with:
         python_version: ${{ inputs.python-version }}
-        pkg_cache: ${{ inputs.pkg_cache }}
 
     # ============================================================
     # Run reviewdog
