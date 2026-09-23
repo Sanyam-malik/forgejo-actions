@@ -63,7 +63,7 @@ runs:
   steps:
     # ------------------------------------------------------------
     # Ensure Gitleaks is installed. Adjust the path below to
-    # wherever the install-gitleaks composite action lives in this
+    # wherever the setup-gitleaks composite action lives in this
     # repo.
     # ------------------------------------------------------------
     - name: Ensure Gitleaks is installed
@@ -77,7 +77,7 @@ runs:
 
     - name: Install Gitleaks
       if: env.gitleaks_missing == 'true'
-      uses: ./.forgejo/actions/install-gitleaks
+      uses: ${{ github.action_repository }}/setup-gitleaks@${{ github.action_ref }}
       with:
         version: ${{ inputs.gitleaks_version }}
         install_dir: ${{ inputs.gitleaks_install_dir }}

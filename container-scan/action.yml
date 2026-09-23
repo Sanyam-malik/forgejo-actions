@@ -77,7 +77,7 @@ runs:
   steps:
     - id: scan
       name: Scan image
-      uses: ./.forgejo/actions/run-vulnerability-scan
+      uses: ${{ github.action_repository }}/run-vulnerability-scan@${{ github.action_ref }}
       with:
         scan_type: image
         target: ${{ inputs.image }}
@@ -168,7 +168,7 @@ runs:
     - id: pr-comment
       name: Post scan summary to pull request
       if: always() && inputs.post_pr_comment == 'true'
-      uses: ./.forgejo/actions/post-comment
+      uses: ${{ github.action_repository }}/post-comment@${{ github.action_ref }}
       with:
         body_path: ${{ steps.build-summary.outputs.summary }}
         marker: "<!-- trivy-container-scan:${{ inputs.image }} -->"
