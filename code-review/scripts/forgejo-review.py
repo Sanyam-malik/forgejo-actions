@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import re
+import subprocess
 import sys
-import urllib.error
-import urllib.request
+import tempfile
+from pathlib import Path
+from urllib import error
+from urllib import request
 
 
 VALID_FILTERS = {
@@ -36,13 +40,8 @@ def load_json(path):
         die(f"Failed to read JSON file: {exc}")
 
 
-# ------------------------------------------------------------
-# Path handling
-# ------------------------------------------------------------
-
 def normalize_path(path):
     path = path.strip().strip("\"'")
-
     path = path.replace("\\", "/")
 
     while path.startswith("./"):
@@ -55,44 +54,16 @@ def normalize_path(path):
 
 
 # ------------------------------------------------------------
-# Reviewdog parsing
+# reviewdog parsing
 # ------------------------------------------------------------
 
 def parse_reviewdog_line(line):
-    """
-    Supports reviewdog/local output such as:
-
-        AGENTS.md:5:81 error MD013/line-length ...
-        README.md:17:5 error MD060/table-column-style ...
-        file.java:42:10: message
-        file.java:42: message
-        file.java:42 message
-
-    Returns:
-
-        {
-            "path": str,
-            "line": int,
-            "column": int | None,
-            "message": str
-        }
-
-    or None.
-    """
-
     line = line.rstrip("\n")
 
     if not line.strip():
         return None
 
-    # --------------------------------------------------------
     # file:line:column message
-    #
-    # Current reviewdog format:
-    #
-    # AGENTS.md:5:81 error MD013/line-length ...
-    # --------------------------------------------------------
-
     match = re.match(
         r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+)"
         r"\s+(?P<message>.+)$",
@@ -107,10 +78,7 @@ def parse_reviewdog_line(line):
             "message": match.group("message").strip(),
         }
 
-    # --------------------------------------------------------
     # file:line:column: message
-    # --------------------------------------------------------
-
     match = re.match(
         r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):"
         r"\s*(?P<message>.+)$",
@@ -125,10 +93,7 @@ def parse_reviewdog_line(line):
             "message": match.group("message").strip(),
         }
 
-    # --------------------------------------------------------
     # file:line: message
-    # --------------------------------------------------------
-
     match = re.match(
         r"^(?P<path>.+?):(?P<line>\d+):"
         r"\s*(?P<message>.+)$",
@@ -143,10 +108,7 @@ def parse_reviewdog_line(line):
             "message": match.group("message").strip(),
         }
 
-    # --------------------------------------------------------
     # file:line message
-    # --------------------------------------------------------
-
     match = re.match(
         r"^(?P<path>.+?):(?P<line>\d+)"
         r"\s+(?P<message>.+)$",
@@ -187,25 +149,11 @@ def parse_findings(result_file):
 # ------------------------------------------------------------
 
 def normalize_status(item):
-    """
-    Normalize Forgejo file status.
-
-    Forgejo may report:
-
-        added
-        modified
-        changed
-        renamed
-        deleted
-
-    Internally we treat "changed" as "modified".
-    """
-
     status = str(
         item.get("status", "")
     ).lower().strip()
 
-    # Forgejo can report "changed".
+    # Forgejo commonly reports "changed".
     if status == "changed":
         return "modified"
 
@@ -217,19 +165,8 @@ def normalize_status(item):
     }:
         return status
 
-    # --------------------------------------------------------
-    # Fallback based on additions/deletions
-    # --------------------------------------------------------
-
-    additions = item.get(
-        "additions",
-        0,
-    ) or 0
-
-    deletions = item.get(
-        "deletions",
-        0,
-    ) or 0
+    additions = item.get("additions", 0) or 0
+    deletions = item.get("deletions", 0) or 0
 
     if additions > 0 and deletions == 0:
         return "added"
@@ -240,9 +177,6 @@ def normalize_status(item):
     if additions > 0 or deletions > 0:
         return "modified"
 
-    # Unknown status:
-    # treat the file as modified so changed-file review
-    # does not accidentally exclude it.
     return "modified"
 
 
@@ -282,12 +216,7 @@ def finding_matches_file(
     if finding_path in changed_files:
         return finding_path
 
-    # --------------------------------------------------------
-    # Handle path representation differences.
-    # --------------------------------------------------------
-
     for changed_path in changed_files:
-
         normalized_changed = normalize_path(
             changed_path
         )
@@ -308,10 +237,6 @@ def finding_matches_file(
     return None
 
 
-# ------------------------------------------------------------
-# Filtering
-# ------------------------------------------------------------
-
 def filter_findings(
     findings,
     changed_files,
@@ -323,7 +248,6 @@ def filter_findings(
     filtered = []
 
     for finding in findings:
-
         matched_path = finding_matches_file(
             finding,
             changed_files,
@@ -332,87 +256,39 @@ def filter_findings(
         if matched_path is None:
             continue
 
-        file_info = changed_files[
+        status = changed_files[
             matched_path
-        ]
-
-        status = file_info["status"]
-
-        # ----------------------------------------------------
-        # changed_files / file
-        #
-        # Include:
-        #   added
-        #   modified
-        #   renamed
-        #   deleted
-        # ----------------------------------------------------
+        ]["status"]
 
         if filter_mode in {
             "changed_files",
             "file",
         }:
-
             if status not in CHANGED_FILE_STATUSES:
                 continue
 
-            finding["path"] = matched_path
-            finding["_status"] = status
-
-            filtered.append(finding)
-
-            continue
-
-        # ----------------------------------------------------
-        # added
-        #
-        # Only newly-added files.
-        # ----------------------------------------------------
-
-        if filter_mode == "added":
-
+        elif filter_mode == "added":
             if status != "added":
                 continue
 
-            finding["path"] = matched_path
-            finding["_status"] = status
+        elif filter_mode == "diff_context":
+            # The reporter currently operates at file scope.
+            # Keep findings from changed files.
+            pass
 
-            filtered.append(finding)
+        finding["path"] = matched_path
+        finding["_status"] = status
 
-            continue
-
-        # ----------------------------------------------------
-        # diff_context
-        #
-        # The custom reporter currently receives reviewdog's
-        # complete local output, not structured diff context.
-        #
-        # Therefore changed files are used as the available
-        # scope here.
-        # ----------------------------------------------------
-
-        if filter_mode == "diff_context":
-
-            finding["path"] = matched_path
-            finding["_status"] = status
-
-            filtered.append(finding)
-
-            continue
+        filtered.append(finding)
 
     return filtered
 
-
-# ------------------------------------------------------------
-# Deduplication
-# ------------------------------------------------------------
 
 def deduplicate_findings(findings):
     seen = set()
     result = []
 
     for finding in findings:
-
         key = (
             normalize_path(
                 finding.get("path", "")
@@ -432,7 +308,404 @@ def deduplicate_findings(findings):
 
 
 # ------------------------------------------------------------
-# Forgejo review comments
+# Source context
+# ------------------------------------------------------------
+
+def get_source_context(
+    path,
+    line,
+    context_lines,
+):
+    if not path:
+        return None
+
+    if not isinstance(line, int):
+        return None
+
+    if line < 1:
+        return None
+
+    source_path = Path(path)
+
+    if not source_path.is_file():
+        return None
+
+    try:
+        lines = source_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+    except OSError:
+        return None
+
+    if not lines:
+        return None
+
+    target_index = line - 1
+
+    if target_index >= len(lines):
+        target_index = len(lines) - 1
+
+    start = max(
+        0,
+        target_index - context_lines,
+    )
+
+    end = min(
+        len(lines),
+        target_index + context_lines + 1,
+    )
+
+    output = []
+
+    for index in range(start, end):
+        marker = ">" if index == target_index else " "
+
+        output.append(
+            f"{marker} {index + 1:6}: "
+            f"{lines[index]}"
+        )
+
+    return "\n".join(output)
+
+
+# ------------------------------------------------------------
+# AI suggestions
+# ------------------------------------------------------------
+
+def ai_enabled():
+    return (
+        os.environ.get(
+            "AI_SUGGESTIONS",
+            "false",
+        ).strip().lower()
+        == "true"
+    )
+
+
+def ai_context_lines():
+    raw = os.environ.get(
+        "AI_CONTEXT_LINES",
+        "10",
+    ).strip()
+
+    try:
+        value = int(raw)
+    except ValueError:
+        return 10
+
+    return max(
+        0,
+        min(value, 100),
+    )
+
+
+def run_ai_suggestion(
+    finding,
+    source_context,
+):
+    if not ai_enabled():
+        return None
+
+    action_path = os.environ.get(
+        "GITHUB_ACTION_PATH",
+        "",
+    ).strip()
+
+    if not action_path:
+        print(
+            "AI: GITHUB_ACTION_PATH is not set; "
+            "skipping AI suggestion."
+        )
+        return None
+
+    ai_script = (
+        Path(action_path)
+        / "scripts"
+        / "ai-suggestions.py"
+    )
+
+    if not ai_script.is_file():
+        print(
+            "AI: ai-suggestions.py not found; "
+            "skipping AI suggestion."
+        )
+        return None
+
+    base_url = os.environ.get(
+        "AI_BASE_URL",
+        "",
+    ).strip()
+
+    model = os.environ.get(
+        "AI_MODEL",
+        "",
+    ).strip()
+
+    if not base_url:
+        print(
+            "AI: AI_BASE_URL is not configured; "
+            "skipping AI suggestions."
+        )
+        return None
+
+    if not model:
+        print(
+            "AI: AI_MODEL is not configured; "
+            "skipping AI suggestions."
+        )
+        return None
+
+    if not source_context:
+        print(
+            f"AI: no source context for "
+            f"{finding.get('path')}:{finding.get('line')}; "
+            "skipping."
+        )
+        return None
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="forgejo-ai-"
+        ) as temp_dir:
+
+            temp_path = Path(temp_dir)
+
+            finding_file = (
+                temp_path / "finding.json"
+            )
+
+            context_file = (
+                temp_path / "source.txt"
+            )
+
+            finding_payload = {
+                "path": finding.get("path"),
+                "line": finding.get("line"),
+                "column": finding.get("column"),
+                "message": finding.get("message"),
+            }
+
+            finding_file.write_text(
+                json.dumps(
+                    finding_payload,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            context_file.write_text(
+                source_context,
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ai_script),
+                    str(finding_file),
+                    str(context_file),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=150,
+                check=False,
+                env=os.environ.copy(),
+            )
+
+            if result.returncode != 0:
+                print(
+                    "AI: suggestion generation failed; "
+                    "keeping original linter finding."
+                )
+
+                return None
+
+            output = result.stdout.strip()
+
+            if not output:
+                print(
+                    "AI: empty response; "
+                    "keeping original linter finding."
+                )
+
+                return None
+
+            try:
+                suggestion = json.loads(
+                    output
+                )
+            except json.JSONDecodeError:
+                print(
+                    "AI: invalid suggestion response; "
+                    "keeping original linter finding."
+                )
+                return None
+
+            if not isinstance(
+                suggestion,
+                dict,
+            ):
+                return None
+
+            description = suggestion.get(
+                "description",
+                "",
+            )
+
+            suggestion_text = suggestion.get(
+                "suggestion",
+                "",
+            )
+
+            if not isinstance(
+                description,
+                str,
+            ):
+                description = ""
+
+            if not isinstance(
+                suggestion_text,
+                str,
+            ):
+                suggestion_text = ""
+
+            description = description.strip()
+            suggestion_text = suggestion_text.strip()
+
+            if not description and not suggestion_text:
+                return None
+
+            return {
+                "description": description,
+                "suggestion": suggestion_text,
+            }
+
+    except subprocess.TimeoutExpired:
+        print(
+            "AI: suggestion generation timed out; "
+            "keeping original linter finding."
+        )
+        return None
+
+    except OSError:
+        print(
+            "AI: could not execute suggestion generator; "
+            "keeping original linter finding."
+        )
+        return None
+
+
+def enrich_findings_with_ai(findings):
+    if not ai_enabled():
+        return findings
+
+    print()
+    print("AI suggestions: enabled")
+    print(
+        f"AI context: ±{ai_context_lines()} lines"
+    )
+    print(
+        f"AI findings: {len(findings)}"
+    )
+    print()
+
+    context_lines = ai_context_lines()
+
+    enriched = 0
+    skipped = 0
+
+    for index, finding in enumerate(
+        findings,
+        start=1,
+    ):
+        path = finding.get(
+            "path",
+            "",
+        )
+
+        line = finding.get(
+            "line"
+        )
+
+        print(
+            f"AI [{index}/{len(findings)}] "
+            f"{path}:{line}"
+        )
+
+        # Deleted files generally aren't present in the
+        # working tree, so don't attempt AI enrichment.
+        if finding.get("_status") == "deleted":
+            print(
+                "  skipped: deleted file"
+            )
+            skipped += 1
+            continue
+
+        source_context = get_source_context(
+            path,
+            line,
+            context_lines,
+        )
+
+        if not source_context:
+            print(
+                "  skipped: source context unavailable"
+            )
+            skipped += 1
+            continue
+
+        result = run_ai_suggestion(
+            finding,
+            source_context,
+        )
+
+        if not result:
+            skipped += 1
+            continue
+
+        description = result.get(
+            "description",
+            "",
+        )
+
+        suggestion = result.get(
+            "suggestion",
+            "",
+        )
+
+        if description:
+            finding["ai_description"] = (
+                description
+            )
+
+        if suggestion:
+            finding["ai_suggestion"] = (
+                suggestion
+            )
+
+        if description or suggestion:
+            enriched += 1
+            print("  enriched")
+
+        else:
+            skipped += 1
+
+    print()
+    print(
+        f"AI enriched findings: {enriched}"
+    )
+    print(
+        f"AI skipped findings: {skipped}"
+    )
+    print()
+
+    return findings
+
+
+# ------------------------------------------------------------
+# Forgejo comment generation
 # ------------------------------------------------------------
 
 def build_review_comment(finding):
@@ -447,38 +720,51 @@ def build_review_comment(finding):
         "",
     ).strip()
 
-    if not path:
+    if not path or not message:
         return None
 
-    if not message:
+    if not isinstance(line, int) or line < 1:
         return None
 
-    if not isinstance(line, int):
+    # Deleted files cannot receive a new-position inline
+    # comment against the current PR head.
+    if finding.get("_status") == "deleted":
         return None
 
-    if line < 1:
-        return None
+    body = message
 
-    status = finding.get(
-        "_status"
+    description = finding.get(
+        "ai_description"
     )
 
-    # --------------------------------------------------------
-    # Deleted files
-    #
-    # The finding points to the old revision, so it cannot be
-    # represented as a normal new-position inline comment.
-    # --------------------------------------------------------
+    suggestion = finding.get(
+        "ai_suggestion"
+    )
 
-    if status == "deleted":
-        return None
+    if description:
+        body += (
+            "\n\n"
+            "**Description**"
+            "\n\n"
+            + description
+        )
+
+    if suggestion:
+        body += (
+            "\n\n"
+            "**Suggestion**"
+            "\n\n"
+            + suggestion
+        )
+
+    body += (
+        "\n\n"
+        "_Automated review by reviewdog._"
+    )
 
     return {
         "path": path,
-        "body": (
-            f"{message}\n\n"
-            "_Automated review by reviewdog._"
-        ),
+        "body": body,
         "new_position": line,
         "old_position": 0,
     }
@@ -488,15 +774,12 @@ def build_review_comments(findings):
     comments = []
 
     for finding in findings:
-
         comment = build_review_comment(
             finding
         )
 
-        if comment is None:
-            continue
-
-        comments.append(comment)
+        if comment is not None:
+            comments.append(comment)
 
     return comments
 
@@ -533,7 +816,7 @@ def post_review(
         payload
     ).encode("utf-8")
 
-    request = urllib.request.Request(
+    req = request.Request(
         url,
         data=data,
         method="POST",
@@ -549,9 +832,8 @@ def post_review(
     )
 
     try:
-
-        with urllib.request.urlopen(
-            request,
+        with request.urlopen(
+            req,
             timeout=60,
         ) as response:
 
@@ -565,30 +847,27 @@ def post_review(
 
             return False
 
-    except urllib.error.HTTPError as exc:
-
+    except error.HTTPError as exc:
+        # Deliberately do not print:
+        # - request payload
+        # - response body
         print(
             f"ERROR: Forgejo API returned "
             f"HTTP {exc.code}."
         )
-
         return False
 
-    except urllib.error.URLError:
-
+    except error.URLError:
         print(
             "ERROR: Could not connect to "
             "Forgejo API."
         )
-
         return False
 
     except TimeoutError:
-
         print(
             "ERROR: Forgejo API request timed out."
         )
-
         return False
 
 
@@ -614,8 +893,7 @@ def print_summary(
     )
 
     print(
-        f"Findings after "
-        f"'changed_files' filtering: "
+        f"Findings after filtering: "
         f"{filtered_count}"
     )
 
@@ -635,7 +913,6 @@ def print_summary(
 # ------------------------------------------------------------
 
 def main():
-
     if len(sys.argv) != 10:
         die(
             "Usage: forgejo-review.py "
@@ -701,7 +978,9 @@ def main():
         result_file
     )
 
-    print()
+    print(
+        f"Parsed {len(findings)} findings."
+    )
 
     filtered = filter_findings(
         findings,
@@ -712,6 +991,18 @@ def main():
     filtered = deduplicate_findings(
         filtered
     )
+
+    # --------------------------------------------------------
+    # Optional AI enrichment
+    # --------------------------------------------------------
+
+    filtered = enrich_findings_with_ai(
+        filtered
+    )
+
+    # --------------------------------------------------------
+    # Build Forgejo comments
+    # --------------------------------------------------------
 
     comments = build_review_comments(
         filtered
@@ -739,7 +1030,6 @@ def main():
             "No findings matched the "
             "configured Forgejo filter mode."
         )
-
         return 0
 
     if not comments:
@@ -747,7 +1037,6 @@ def main():
             "No findings can be placed as "
             "inline Forgejo comments."
         )
-
         return 0
 
     print(

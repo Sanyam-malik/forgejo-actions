@@ -23,11 +23,15 @@ echo "========================================"
 echo "Repository : ${OWNER}/${REPO}"
 echo "API URL    : ${API_URL}"
 echo "Filter     : ${FILTER_MODE}"
-echo
 
-# ------------------------------------------------------------
-# Validate filter
-# ------------------------------------------------------------
+if [ "${AI_SUGGESTIONS:-false}" = "true" ]; then
+    echo "AI         : enabled"
+    echo "AI model   : ${AI_MODEL:-<not configured>}"
+else
+    echo "AI         : disabled"
+fi
+
+echo
 
 case "$FILTER_MODE" in
     changed_files|added|diff_context|file|nofilter)
@@ -47,24 +51,19 @@ if ! command -v curl >/dev/null 2>&1; then
     echo "curl not found. Installing curl..."
 
     if command -v apt-get >/dev/null 2>&1; then
-
         sudo apt-get update
         sudo apt-get install -y curl
 
     elif command -v dnf >/dev/null 2>&1; then
-
         sudo dnf install -y curl
 
     elif command -v yum >/dev/null 2>&1; then
-
         sudo yum install -y curl
 
     elif command -v apk >/dev/null 2>&1; then
-
         sudo apk add --no-cache curl
 
     elif command -v zypper >/dev/null 2>&1; then
-
         sudo zypper install -y curl
 
     else
@@ -87,9 +86,7 @@ PR_NUMBER="$(
 import json
 import sys
 
-event_file = sys.argv[1]
-
-with open(event_file, "r", encoding="utf-8") as f:
+with open(sys.argv[1], "r", encoding="utf-8") as f:
     event = json.load(f)
 
 number = None
@@ -115,11 +112,10 @@ fi
 echo "Pull request: #${PR_NUMBER}"
 
 # ------------------------------------------------------------
-# API helper
+# Forgejo API helper
 # ------------------------------------------------------------
 
 forgejo_api() {
-
     local METHOD="$1"
     local PATH="$2"
 
@@ -139,7 +135,7 @@ forgejo_api() {
 }
 
 # ------------------------------------------------------------
-# Read PR
+# Get pull request
 # ------------------------------------------------------------
 
 PR_JSON="$(
@@ -212,7 +208,7 @@ for item in files:
 PY
 
 # ------------------------------------------------------------
-# Parse reviewdog output and post Forgejo review
+# Process reviewdog findings
 # ------------------------------------------------------------
 
 python3 \

@@ -1,8 +1,10 @@
 name: 'Multi-language Code Review'
+
 description: >
   Detects programming languages in a repository, runs open-source linters
-  through reviewdog, and posts findings as inline comments on Forgejo
-  pull requests. Security and secret scanning are intentionally out of scope.
+  through reviewdog, optionally generates AI descriptions and suggestions
+  using an OpenAI-compatible endpoint, and posts findings as inline comments
+  on Forgejo pull requests.
 
 inputs:
   token:
@@ -52,7 +54,7 @@ inputs:
   filter-mode:
     description: >
       Review scope:
-      changed_files, added_lines, file, or nofilter.
+      changed_files, added, diff_context, file, or nofilter.
     required: false
     default: "changed_files"
 
@@ -64,13 +66,13 @@ inputs:
 
   reviewdog-version:
     description: >
-      Reviewdog version. Use latest, nightly, or vX.Y.Z.
+      Reviewdog version. Use latest or vX.Y.Z.
     required: false
     default: "latest"
 
   python-version:
     description: >
-      Python version used by the Forgejo reporter.
+      Python version used by the Forgejo reporter and AI suggestions.
       Examples: 3, 3.11, 3.12.
     required: false
     default: "3"
@@ -80,14 +82,58 @@ inputs:
     required: false
     default: "."
 
+  ai-suggestions:
+    description: >
+      Enable AI-generated descriptions and suggestions for existing
+      linter findings.
+    required: false
+    default: "false"
+
+  ai-base-url:
+    description: >
+      OpenAI-compatible API base URL.
+      Examples:
+      http://localhost:8080/v1
+      http://ollama:11434/v1
+      https://api.openai.com/v1
+    required: false
+    default: ""
+
+  ai-api-key:
+    description: >
+      API key for the OpenAI-compatible endpoint.
+      Can be empty for local endpoints that do not require authentication.
+    required: false
+    default: ""
+
+  ai-model:
+    description: >
+      Model used to generate descriptions and suggestions.
+    required: false
+    default: ""
+
+  ai-temperature:
+    description: >
+      Temperature used for AI suggestions.
+    required: false
+    default: "0"
+
+  ai-max-tokens:
+    description: >
+      Maximum tokens generated for each AI suggestion.
+    required: false
+    default: "1024"
+
+  ai-context-lines:
+    description: >
+      Number of source-code lines included before and after a finding.
+    required: false
+    default: "10"
+
 runs:
   using: composite
 
   steps:
-
-    # ============================================================
-    # Prepare scripts
-    # ============================================================
 
     - name: Prepare scripts
       shell: bash
@@ -97,10 +143,7 @@ runs:
         SCRIPT_DIR="${{ github.action_path }}/scripts"
 
         chmod +x "$SCRIPT_DIR/"*.sh
-
-    # ============================================================
-    # Detect languages
-    # ============================================================
+        chmod +x "$SCRIPT_DIR/"*.py
 
     - name: Detect languages
       id: detect
@@ -115,10 +158,6 @@ runs:
 
         "${{ github.action_path }}/scripts/detect-languages.sh"
 
-    # ============================================================
-    # Install reviewdog
-    # ============================================================
-
     - name: Install reviewdog
       id: install-reviewdog
       shell: bash
@@ -129,10 +168,6 @@ runs:
         set -euo pipefail
 
         "${{ github.action_path }}/scripts/install-reviewdog.sh"
-
-    # ============================================================
-    # Install linters
-    # ============================================================
 
     - name: Install detected linters
       shell: bash
@@ -146,10 +181,6 @@ runs:
 
         "${{ github.action_path }}/scripts/install-linters.sh"
 
-    # ============================================================
-    # Generate reviewdog configuration
-    # ============================================================
-
     - name: Build reviewdog config
       id: config
       shell: bash
@@ -162,26 +193,11 @@ runs:
 
         "${{ github.action_path }}/scripts/generate-reviewdog-config.sh"
 
-    # ============================================================
-    # Setup Python for custom Forgejo reporter
-    # ============================================================
-
     - name: Setup Python
       if: steps.config.outputs.runner-count != '0'
       uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
       with:
         python_version: ${{ inputs.python-version }}
-
-    # ============================================================
-    # Run reviewdog
-    #
-    # IMPORTANT:
-    # Do NOT use -filter-mode=added here.
-    #
-    # reviewdog's PR filtering normally relies on a reporter providing
-    # the PR diff. We deliberately use our own Forgejo reporter, so
-    # the Forgejo reporter owns diff filtering.
-    # ============================================================
 
     - name: Run reviewdog
       id: review
@@ -193,20 +209,13 @@ runs:
       run: |
         set -euo pipefail
 
-        echo "Running reviewdog"
-        echo "Level: $REVIEWDOG_LEVEL"
-
         reviewdog \
-        -conf=.reviewdog.generated.yml \
-        -reporter=local \
-        -level="$REVIEWDOG_LEVEL" \
-        -filter-mode=nofilter \
-        -fail-level=none \
-        > reviewdog-results.txt 2>&1
-
-    # ============================================================
-    # Custom Forgejo reporter
-    # ============================================================
+          -conf=.reviewdog.generated.yml \
+          -reporter=local \
+          -level="$REVIEWDOG_LEVEL" \
+          -filter-mode=nofilter \
+          -fail-level=none \
+          > reviewdog-results.txt 2>&1
 
     - name: Post Forgejo review
       if: steps.config.outputs.runner-count != '0'
@@ -216,15 +225,20 @@ runs:
         FORGEJO_TOKEN: ${{ inputs.token }}
         FORGEJO_API_URL: ${{ env.GITHUB_API_URL }}
         REVIEW_FILTER_MODE: ${{ inputs.filter-mode }}
+
+        AI_SUGGESTIONS: ${{ inputs.ai-suggestions }}
+        AI_BASE_URL: ${{ inputs.ai-base-url }}
+        AI_API_KEY: ${{ inputs.ai-api-key }}
+        AI_MODEL: ${{ inputs.ai-model }}
+        AI_TEMPERATURE: ${{ inputs.ai-temperature }}
+        AI_MAX_TOKENS: ${{ inputs.ai-max-tokens }}
+        AI_CONTEXT_LINES: ${{ inputs.ai-context-lines }}
+
       run: |
         set -euo pipefail
 
         "${{ github.action_path }}/scripts/forgejo-review.sh" \
           reviewdog-results.txt
-
-    # ============================================================
-    # Nothing to review
-    # ============================================================
 
     - name: No linters ran
       if: steps.config.outputs.runner-count == '0'
