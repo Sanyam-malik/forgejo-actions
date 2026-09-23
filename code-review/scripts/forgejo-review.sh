@@ -30,7 +30,7 @@ echo
 # ------------------------------------------------------------
 
 case "$FILTER_MODE" in
-    added|diff_context|file|nofilter)
+    changed_files|added|diff_context|file|nofilter)
         ;;
     *)
         echo "Unsupported filter mode: $FILTER_MODE"
