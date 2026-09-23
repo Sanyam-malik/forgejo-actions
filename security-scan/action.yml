@@ -124,7 +124,7 @@ runs:
     # ============================================================
     - id: secrets-scan
       name: Secrets scan
-      uses: ./.forgejo/actions/run-secrets-scan
+      uses: ./run-secrets-scan
       with:
         scan_path: ${{ inputs.scan_path }}
         gitleaks_version: ${{ inputs.gitleaks_version }}
@@ -139,7 +139,7 @@ runs:
     # ============================================================
     - id: dependency-scan
       name: Dependency vulnerability scan
-      uses: ./.forgejo/actions/run-vulnerability-scan
+      uses: ./run-vulnerability-scan
       with:
         scan_type: fs
         target: ${{ inputs.scan_path }}
@@ -333,7 +333,7 @@ runs:
     # ============================================================
     - name: Comment security scan summary on pull request
       if: always() && inputs.post_pr_comment == 'true'
-      uses: ./.forgejo/actions/post-comment
+      uses: ./post-comment
       with:
         body_path: ${{ runner.temp }}/security-summary.md
         marker: "<!-- security-scan-summary -->"
