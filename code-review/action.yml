@@ -208,17 +208,6 @@ runs:
             exit 1
           fi
         fi
-        
-        CURL_PATH="$(command -v curl)"
-        CURL_DIR="$(dirname "$CURL_PATH")"
-        
-        echo "curl: $CURL_PATH"
-        echo "curl directory: $CURL_DIR"
-        
-        echo "$CURL_DIR" >> "$GITHUB_PATH"
-        
-        # Make it available in the current step too.
-        export PATH="$CURL_DIR:$PATH"
 
 
     # ============================================================
