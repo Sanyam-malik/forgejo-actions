@@ -21,15 +21,15 @@ inputs:
 
   languages:
     description: >
-      Comma separated list of languages to force.
-      Leave empty to auto-detect.
+      Comma separated list of languages to force MegaLinter to lint.
+      Leave empty to let MegaLinter auto-detect.
       Example: java,python,yaml
     required: false
     default: ""
 
   exclude-languages:
     description: >
-      Comma separated list of detected languages to skip.
+      Comma separated list of languages to tell MegaLinter to skip.
     required: false
     default: ""
 
@@ -38,12 +38,6 @@ inputs:
       Comma separated list of linters to never run.
     required: false
     default: ""
-
-  min-files:
-    description: >
-      Minimum number of matching files before a language counts as used.
-    required: false
-    default: "1"
 
   level:
     description: >
@@ -145,18 +139,45 @@ runs:
         chmod +x "$SCRIPT_DIR/"*.sh
         chmod +x "$SCRIPT_DIR/"*.py
 
-    - name: Detect languages
-      id: detect
+    - name: Configure MegaLinter
+      id: megalinter-config
       shell: bash
-      working-directory: ${{ inputs.workdir }}
       env:
-        LANGUAGES_OVERRIDE: ${{ inputs.languages }}
+        LANGUAGES: ${{ inputs.languages }}
         EXCLUDE_LANGUAGES: ${{ inputs.exclude-languages }}
-        MIN_FILES: ${{ inputs.min-files }}
+        EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
       run: |
         set -euo pipefail
 
-        "${{ github.action_path }}/scripts/detect-languages.sh"
+        "${{ github.action_path }}/scripts/generate-megalinter-env.sh"
+
+    - name: Run MegaLinter
+      id: megalinter
+      uses: oxsecurity/megalinter@v8
+      env:
+        # Let our own downstream filter-mode step (changed_files, diff_context,
+        # etc.) decide what's in-scope for comments; have MegaLinter itself
+        # just lint everything so nothing is missed either way.
+        VALIDATE_ALL_CODEBASE: "true"
+        DEFAULT_WORKSPACE: ${{ github.workspace }}/${{ inputs.workdir }}
+        REPORT_OUTPUT_FOLDER: ${{ github.workspace }}/megalinter-reports
+
+        ENABLE: ${{ env.MEGALINTER_ENABLE }}
+        DISABLE: ${{ env.MEGALINTER_DISABLE }}
+        DISABLE_LINTERS: ${{ env.MEGALINTER_DISABLE_LINTERS }}
+
+        # We post our own Forgejo comments below; don't let MegaLinter's
+        # own reporters (written for GitHub/GitLab) try anything here,
+        # and don't let its own exit code fail the job out from under us.
+        DISABLE_ERRORS: "true"
+        SARIF_REPORTER: "true"
+        SARIF_REPORTER_FILE_NAME: "megalinter-report.sarif"
+        TEXT_REPORTER: "true"
+        GITHUB_COMMENT_REPORTER: "false"
+        GITHUB_STATUS_REPORTER: "false"
+        UPDATED_SOURCES_REPORTER: "false"
+        FILEIO_REPORTER: "false"
+        EMAIL_REPORTER: "false"
 
     - name: Install reviewdog
       id: install-reviewdog
@@ -169,39 +190,13 @@ runs:
 
         "${{ github.action_path }}/scripts/install-reviewdog.sh"
 
-    - name: Install detected linters
-      shell: bash
-      working-directory: ${{ inputs.workdir }}
-      env:
-        LANGUAGES: ${{ steps.detect.outputs.languages }}
-        EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
-        PKG_CACHE: ${{ inputs.pkg_cache }}
-      run: |
-        set -euo pipefail
-
-        "${{ github.action_path }}/scripts/install-linters.sh"
-
-    - name: Build reviewdog config
-      id: config
-      shell: bash
-      working-directory: ${{ inputs.workdir }}
-      env:
-        LANGUAGES: ${{ steps.detect.outputs.languages }}
-        EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
-      run: |
-        set -euo pipefail
-
-        "${{ github.action_path }}/scripts/generate-reviewdog-config.sh"
-
     - name: Setup Python
-      if: steps.config.outputs.runner-count != '0'
       uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
       with:
         python_version: ${{ inputs.python-version }}
 
     - name: Run reviewdog
       id: review
-      if: steps.config.outputs.runner-count != '0'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -209,16 +204,25 @@ runs:
       run: |
         set -euo pipefail
 
-        reviewdog \
-          -conf=.reviewdog.generated.yml \
-          -reporter=local \
-          -level="$REVIEWDOG_LEVEL" \
-          -filter-mode=nofilter \
-          -fail-level=none \
-          > reviewdog-results.txt 2>&1
+        SARIF_FILE="${{ github.workspace }}/megalinter-reports/megalinter-report.sarif"
+
+        if [ ! -s "$SARIF_FILE" ]; then
+          echo "No MegaLinter SARIF findings at $SARIF_FILE."
+          echo "(Either nothing was flagged, or none of the matched linters support SARIF output.)"
+          : > reviewdog-results.txt
+        else
+          reviewdog \
+            -f=sarif \
+            -name=megalinter \
+            -reporter=local \
+            -level="$REVIEWDOG_LEVEL" \
+            -filter-mode=nofilter \
+            -fail-level=none \
+            < "$SARIF_FILE" \
+            > reviewdog-results.txt 2>&1
+        fi
 
     - name: Post Forgejo review
-      if: steps.config.outputs.runner-count != '0'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -239,10 +243,3 @@ runs:
 
         "${{ github.action_path }}/scripts/forgejo-review.sh" \
           reviewdog-results.txt
-
-    - name: No linters ran
-      if: steps.config.outputs.runner-count == '0'
-      shell: bash
-      run: |
-        echo "No supported/detected languages had a matching linter installed."
-        echo "Nothing to review."
