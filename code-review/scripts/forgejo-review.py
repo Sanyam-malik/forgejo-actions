@@ -597,6 +597,157 @@ def run_ai_suggestion(
         return None
 
 
+# ------------------------------------------------------------
+# Local (non-AI) description/suggestion generation
+# ------------------------------------------------------------
+#
+# These are heuristic and rule-based only: no network calls, no
+# LLM. They fill in a "Description" / "Suggestion" section using
+# the linter's own message plus, where we recognize the tool and
+# rule code, a link to that rule's public documentation.
+
+RULE_CODE_PATTERNS = (
+    # Leading code: "MD013/line-length ...", "E501 ...",
+    # "SC2086: ...", "DL3008 warning: ..."
+    re.compile(
+        r"^(?P<code>[A-Z]{1,5}\d{2,5}(?:/[\w-]+)?)\b"
+    ),
+    # Trailing code in brackets/parens:
+    # "... [Error/no-unused-vars]", "... [SC2086]",
+    # "... (Style/StringLiterals)"
+    re.compile(
+        r"[\[(](?:[A-Za-z]+/)?(?P<code>[A-Za-z0-9_.-]+)[\])]\s*$"
+    ),
+)
+
+
+def extract_rule_code(text):
+    if not text:
+        return None
+
+    for pattern in RULE_CODE_PATTERNS:
+        match = pattern.search(text)
+
+        if match:
+            code = match.group("code").strip()
+
+            if code:
+                return code
+
+    return None
+
+
+def rule_doc_url(tool, code):
+    if not tool or not code:
+        return None
+
+    tool = tool.lower()
+
+    if tool == "markdownlint":
+        rule_id = code.split("/")[0].lower()
+        return (
+            "https://github.com/DavidAnson/markdownlint/"
+            f"blob/main/doc/{rule_id}.md"
+        )
+
+    if tool == "shellcheck":
+        match = re.search(r"\d+", code)
+        if match:
+            return f"https://www.shellcheck.net/wiki/SC{match.group(0)}"
+
+    if tool == "ruff":
+        return f"https://docs.astral.sh/ruff/rules/{code}/"
+
+    if tool == "eslint":
+        rule = code.split("/")[-1]
+        return f"https://eslint.org/docs/latest/rules/{rule}"
+
+    if tool == "hadolint":
+        return f"https://github.com/hadolint/hadolint/wiki/{code}"
+
+    if tool == "clippy":
+        rule = code.replace("clippy::", "")
+        return (
+            "https://rust-lang.github.io/rust-clippy/"
+            f"master/#{rule}"
+        )
+
+    if tool == "tflint":
+        return (
+            "https://github.com/terraform-linters/"
+            f"tflint-ruleset-terraform/blob/main/docs/rules/{code}.md"
+        )
+
+    return None
+
+
+def local_description(tool, code, text):
+    label = TOOL_LABELS.get(tool, tool) if tool else "This linter"
+
+    if code:
+        return f"{label} flagged this via rule `{code}`."
+
+    return f"{label} flagged this."
+
+
+def local_suggestion(tool, code):
+    label = TOOL_LABELS.get(tool, tool) if tool else "the linter"
+
+    doc_url = rule_doc_url(tool, code)
+
+    if doc_url:
+        return f"See the rule's documentation for how to fix it: {doc_url}"
+
+    if code:
+        return (
+            f"Look up rule `{code}` in {label}'s documentation "
+            "for guidance on fixing this."
+        )
+
+    return f"Check {label}'s documentation for how to resolve this."
+
+
+def enrich_findings_locally(findings):
+    filled = 0
+
+    for finding in findings:
+        # Don't overwrite an AI-generated description/suggestion.
+        if finding.get("description") and finding.get("suggestion"):
+            continue
+
+        message = finding.get("message", "").strip()
+
+        if not message:
+            continue
+
+        parsed = parse_message(message)
+        code = extract_rule_code(parsed["text"])
+
+        if not finding.get("description"):
+            finding["description"] = local_description(
+                parsed["tool"],
+                code,
+                parsed["text"],
+            )
+            finding["description_source"] = "local"
+
+        if not finding.get("suggestion"):
+            finding["suggestion"] = local_suggestion(
+                parsed["tool"],
+                code,
+            )
+            finding["suggestion_source"] = "local"
+
+        filled += 1
+
+    print(
+        f"Local (non-AI) descriptions/suggestions added: {filled}"
+    )
+    print()
+
+    return findings
+
+
 def enrich_findings_with_ai(findings):
     if not ai_enabled():
         return findings
@@ -676,14 +827,16 @@ def enrich_findings_with_ai(findings):
         )
 
         if description:
-            finding["ai_description"] = (
+            finding["description"] = (
                 description
             )
+            finding["description_source"] = "ai"
 
         if suggestion:
-            finding["ai_suggestion"] = (
+            finding["suggestion"] = (
                 suggestion
             )
+            finding["suggestion_source"] = "ai"
 
         if description or suggestion:
             enriched += 1
@@ -708,6 +861,79 @@ def enrich_findings_with_ai(findings):
 # Forgejo comment generation
 # ------------------------------------------------------------
 
+LEVEL_EMOJI = {
+    "error": "🛑",
+    "warning": "⚠️",
+    "info": "ℹ️",
+    "note": "ℹ️",
+}
+
+TOOL_LABELS = {
+    "golangci-lint": "Go · golangci-lint",
+    "ruff": "Python · ruff",
+    "eslint": "JavaScript · eslint",
+    "shellcheck": "Shell · shellcheck",
+    "yamllint": "YAML · yamllint",
+    "hadolint": "Dockerfile · hadolint",
+    "rubocop": "Ruby · rubocop",
+    "clippy": "Rust · clippy",
+    "markdownlint": "Markdown · markdownlint",
+    "tflint": "Terraform · tflint",
+    "phpcs": "PHP · phpcs",
+}
+
+# reviewdog's local reporter prefixes each message with
+# "[tool] level ..." (e.g. "[markdownlint] error MD013 ...").
+# Pull that apart so we can render a friendly header instead of
+# dumping the raw prefix into the comment body.
+MESSAGE_PREFIX_RE = re.compile(
+    r"^\[(?P<tool>[^\]]+)\]\s*"
+    r"(?:(?P<level>error|warning|info|note)\b\s*)?"
+    r"(?P<rest>.+)$",
+    re.IGNORECASE,
+)
+
+
+def parse_message(message):
+    match = MESSAGE_PREFIX_RE.match(message)
+
+    if not match:
+        return {
+            "tool": None,
+            "level": None,
+            "text": message,
+        }
+
+    rest = match.group("rest").strip()
+
+    if not rest:
+        return {
+            "tool": None,
+            "level": None,
+            "text": message,
+        }
+
+    return {
+        "tool": match.group("tool").strip(),
+        "level": (
+            (match.group("level") or "").lower()
+            or None
+        ),
+        "text": rest,
+    }
+
+
+def friendly_header(tool, level):
+    emoji = LEVEL_EMOJI.get(level, "🔍")
+
+    label = TOOL_LABELS.get(tool, tool) if tool else None
+
+    if label:
+        return f"{emoji} **{label}**"
+
+    return f"{emoji} **Lint finding**"
+
+
 def build_review_comment(finding):
     path = normalize_path(
         finding.get("path", "")
@@ -731,14 +957,23 @@ def build_review_comment(finding):
     if finding.get("_status") == "deleted":
         return None
 
-    body = message
+    parsed = parse_message(message)
+
+    body = (
+        friendly_header(
+            parsed["tool"],
+            parsed["level"],
+        )
+        + "\n\n"
+        + parsed["text"]
+    )
 
     description = finding.get(
-        "ai_description"
+        "description"
     )
 
     suggestion = finding.get(
-        "ai_suggestion"
+        "suggestion"
     )
 
     if description:
@@ -759,7 +994,7 @@ def build_review_comment(finding):
 
     body += (
         "\n\n"
-        "_Automated review by reviewdog._"
+        "<sub>🤖 Automated review by reviewdog</sub>"
     )
 
     return {
@@ -803,10 +1038,17 @@ def post_review(
         f"/pulls/{pr_number}/reviews"
     )
 
+    comment_word = (
+        "comment" if len(comments) == 1 else "comments"
+    )
+
     payload = {
         "event": "COMMENT",
         "body": (
-            "Automated code review by reviewdog."
+            "🤖 **Automated code review**\n\n"
+            f"Found {len(comments)} {comment_word} worth a look "
+            "below. These come from open-source linters, not a "
+            "human reviewer — feel free to push back."
         ),
         "commit_id": head_sha,
         "comments": comments,
@@ -997,6 +1239,10 @@ def main():
     # --------------------------------------------------------
 
     filtered = enrich_findings_with_ai(
+        filtered
+    )
+
+    filtered = enrich_findings_locally(
         filtered
     )
 
