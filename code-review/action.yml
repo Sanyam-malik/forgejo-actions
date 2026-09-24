@@ -146,6 +146,7 @@ runs:
         LANGUAGES: ${{ inputs.languages }}
         EXCLUDE_LANGUAGES: ${{ inputs.exclude-languages }}
         EXCLUDE_TOOLS: ${{ inputs.exclude-tools }}
+        REVIEW_WORKDIR: ${{ inputs.workdir }}
       run: |
         set -euo pipefail
 
