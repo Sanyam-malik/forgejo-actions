@@ -47,7 +47,7 @@ inputs:
       not by reviewdog's own -level flag, which does not filter output
       for the rdjson reporter used here.)
     required: false
-    default: "info"
+    default: "error"
 
   filter-mode:
     description: >
@@ -60,7 +60,7 @@ inputs:
     description: >
       Fail threshold: none, any, info, warning, or error.
     required: false
-    default: "error"
+    default: "none"
 
   reviewdog-version:
     description: >
