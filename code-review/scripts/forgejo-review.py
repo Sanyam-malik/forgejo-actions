@@ -156,10 +156,15 @@ def parse_rdjson_diagnostic(diagnostic, source=None):
 
     code_data = diagnostic.get("code")
     code = None
+    code_url = None
     if isinstance(code_data, dict):
         value = code_data.get("value")
         if isinstance(value, str) and value.strip():
             code = value.strip()
+
+        url = code_data.get("url")
+        if isinstance(url, str) and url.strip():
+            code_url = url.strip()
 
     text = message.strip()
     if code and code not in text:
@@ -177,6 +182,8 @@ def parse_rdjson_diagnostic(diagnostic, source=None):
         "column": column,
         "message": text,
         "_severity": level,
+        "_rule_code": code,
+        "_rule_url": code_url,
     }
 
 
@@ -1110,43 +1117,60 @@ def build_review_comment(finding):
         return None
 
     parsed = parse_message(message)
+    severity = finding.get("_severity") or parsed.get("level")
+    tool = parsed.get("tool")
+    label = TOOL_LABELS.get(tool, tool) if tool else "Lint finding"
+    emoji = LEVEL_EMOJI.get(severity, "🔍")
+    rule_code = finding.get("_rule_code")
+    rule_url = finding.get("_rule_url")
+
+    # The RDJSON message may contain the tool/level prefix. Remove it
+    # from the actual finding text because the header already shows it.
+    finding_text = parsed["text"]
+    if rule_code and finding_text.startswith(f"{rule_code}: "):
+        finding_text = finding_text[len(rule_code) + 2:].strip()
 
     body = (
-        friendly_header(
-            parsed["tool"],
-            parsed["level"],
-        )
+        f"{emoji} **{label}"
+        + (f" · `{rule_code}`**" if rule_code else "**")
         + "\n\n"
-        + parsed["text"]
+        + f"**{finding_text}**"
+        + "\n\n"
+        + f"📍 `{path}:{line}`"
     )
 
-    description = finding.get(
-        "description"
-    )
+    if rule_code:
+        body += (
+            "\n\n"
+            f"**Rule:** `{rule_code}`"
+        )
 
-    suggestion = finding.get(
-        "suggestion"
-    )
+    description = finding.get("description")
+    suggestion = finding.get("suggestion")
 
     if description:
         body += (
             "\n\n"
-            "**Description**"
-            "\n\n"
+            "**Why**\n\n"
             + description
         )
 
     if suggestion:
         body += (
             "\n\n"
-            "**Suggestion**"
-            "\n\n"
+            "**Fix**\n\n"
             + suggestion
+        )
+
+    if rule_url:
+        body += (
+            "\n\n"
+            f"📖 **Documentation:** [{rule_code or 'Rule documentation'}]({rule_url})"
         )
 
     body += (
         "\n\n"
-        "<sub>🤖 Automated review by reviewdog</sub>"
+        f"<sub>{label} · {(severity or 'info').upper()}</sub>"
     )
 
     return {
