@@ -153,7 +153,7 @@ runs:
 
     - name: Run MegaLinter
       id: megalinter
-      uses: actions/megalinter@v8
+      uses: ${{ github.action_repository }}/megalinter@v8
       env:
         # Let our own downstream filter-mode step (changed_files, diff_context,
         # etc.) decide what's in-scope for comments; have MegaLinter itself
