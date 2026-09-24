@@ -1,0 +1,69 @@
+name: Forgejo Lock Inactive
+description: Lock inactive Forgejo issues and pull requests after a configurable number of days
+
+author: Your Name
+
+branding:
+  icon: lock
+  color: gray-dark
+
+inputs:
+  days:
+    description: Number of days without activity before locking
+    required: false
+    default: "30"
+
+  token:
+    description: Forgejo API token
+    required: false
+    default: ${{ github.token }}
+
+  issues:
+    description: Process issues
+    required: false
+    default: "true"
+
+  pull-requests:
+    description: Process pull requests
+    required: false
+    default: "true"
+
+  exclude-labels:
+    description: Comma-separated labels that prevent an issue or pull request from being locked
+    required: false
+    default: ""
+
+  include-drafts:
+    description: Lock draft pull requests
+    required: false
+    default: "false"
+
+  comment:
+    description: Comment posted immediately before locking
+    required: false
+    default: "This conversation has been inactive for ${{ inputs.days }} days and has been locked."
+
+  dry-run:
+    description: Report what would be locked without making changes
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+
+  steps:
+    - name: Lock inactive conversations
+      shell: bash
+      env:
+        FORGEJO_TOKEN: ${{ inputs.token }}
+        INACTIVE_DAYS: ${{ inputs.days }}
+        PROCESS_ISSUES: ${{ inputs.issues }}
+        PROCESS_PULL_REQUESTS: ${{ inputs.pull-requests }}
+        EXCLUDE_LABELS: ${{ inputs.exclude-labels }}
+        INCLUDE_DRAFTS: ${{ inputs.include-drafts }}
+        LOCK_COMMENT: ${{ inputs.comment }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        FORGEJO_API_URL: ${{ github.api_url }}
+        FORGEJO_REPOSITORY: ${{ github.repository }}
+      run: |
+        "${{ github.action_path }}/scripts/lock-inactive.sh"
