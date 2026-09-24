@@ -403,6 +403,43 @@ def finding_matches_file(
     return None
 
 
+SEVERITY_RANK = {
+    "info": 1,
+    "warning": 2,
+    "error": 3,
+}
+
+
+def filter_findings_by_level(findings, level):
+    """Drop findings below the configured minimum severity.
+
+    Only findings whose parsed RDJSON severity is known (_severity set by
+    parse_rdjson_diagnostic) can be compared; findings with no severity
+    info (e.g. legacy plain-text reviewdog output) are always kept, since
+    we have no basis to exclude them.
+    """
+    level = str(level or "").strip().lower()
+
+    if level not in SEVERITY_RANK:
+        # "" / unrecognized -> no filtering.
+        return findings
+
+    threshold = SEVERITY_RANK[level]
+    kept = []
+
+    for finding in findings:
+        severity = finding.get("_severity")
+
+        if severity is None:
+            kept.append(finding)
+            continue
+
+        if SEVERITY_RANK.get(str(severity).lower(), 0) >= threshold:
+            kept.append(finding)
+
+    return kept
+
+
 def filter_findings(
     findings,
     changed_files,
@@ -1322,16 +1359,11 @@ def should_fail(findings, fail_level):
     if fail_level == "any":
         return True
 
-    rank = {
-        "info": 1,
-        "warning": 2,
-        "error": 3,
-    }
-    threshold = rank[fail_level]
+    threshold = SEVERITY_RANK[fail_level]
 
     for finding in findings:
         severity = finding.get("_severity") or "info"
-        if rank.get(str(severity).lower(), 1) >= threshold:
+        if SEVERITY_RANK.get(str(severity).lower(), 1) >= threshold:
             return True
 
     return False
@@ -1463,6 +1495,22 @@ def main():
 
     filtered = deduplicate_findings(
         filtered
+    )
+
+    review_level = os.environ.get(
+        "REVIEW_LEVEL", ""
+    ).strip().lower()
+
+    before_level_filter = len(filtered)
+
+    filtered = filter_findings_by_level(
+        filtered,
+        review_level,
+    )
+
+    print(
+        f"Level filter '{review_level or 'none'}': "
+        f"{before_level_filter} -> {len(filtered)} findings"
     )
 
     if filter_mode in {"added", "diff_context"} and filtered:

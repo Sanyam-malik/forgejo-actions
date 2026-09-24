@@ -41,7 +41,11 @@ inputs:
 
   level:
     description: >
-      Minimum reviewdog severity: info, warning, or error.
+      Minimum severity posted as PR comments: info, warning, or error.
+      Findings below this severity are parsed but dropped before
+      building comments. (This is enforced by the Forgejo posting step,
+      not by reviewdog's own -level flag, which does not filter output
+      for the rdjson reporter used here.)
     required: false
     default: "info"
 
@@ -225,6 +229,7 @@ runs:
         FORGEJO_API_URL: ${{ env.GITHUB_API_URL }}
         REVIEW_FILTER_MODE: ${{ inputs.filter-mode }}
         REVIEW_FAIL_LEVEL: ${{ inputs.fail-level }}
+        REVIEW_LEVEL: ${{ inputs.level }}
 
         AI_SUGGESTIONS: ${{ inputs.ai-suggestions }}
         AI_BASE_URL: ${{ inputs.ai-base-url }}
