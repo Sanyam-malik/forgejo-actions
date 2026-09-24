@@ -5,10 +5,6 @@ set -euo pipefail
 PKG_CACHE="${PKG_CACHE:-}"
 VERSION="${REVIEWDOG_VERSION:-latest}"
 
-# ============================================================
-# Normalize pkg-cache
-# ============================================================
-
 if [ -n "$PKG_CACHE" ]; then
     case "$PKG_CACHE" in
         http://*|https://*)
@@ -19,7 +15,6 @@ if [ -n "$PKG_CACHE" ]; then
     esac
 
     PKG_CACHE="${PKG_CACHE%/}"
-
     BASE_URL="${PKG_CACHE}/github.com/reviewdog/reviewdog"
 
     echo "Using pkg-cache mirror:"
@@ -31,12 +26,7 @@ else
     echo "$BASE_URL"
 fi
 
-# ============================================================
-# Resolve latest version
-# ============================================================
-
 if [ "$VERSION" = "latest" ]; then
-
     echo "Resolving latest reviewdog version..."
 
     LATEST_URL="${BASE_URL}/releases/latest"
@@ -66,29 +56,17 @@ if [ "$VERSION" = "latest" ]; then
     fi
 
     echo "Resolved version: $VERSION"
-
 else
-
-    # Remove optional v prefix.
     VERSION="${VERSION#v}"
 
     echo "Using requested reviewdog version: $VERSION"
-
 fi
-
-# ============================================================
-# Validate version
-# ============================================================
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "ERROR: Invalid reviewdog version: $VERSION"
     echo "Expected: latest, 0.21.2, or v0.21.2"
     exit 1
 fi
-
-# ============================================================
-# Detect platform
-# ============================================================
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -120,10 +98,6 @@ case "$ARCH" in
         ;;
 esac
 
-# ============================================================
-# Download
-# ============================================================
-
 ARCHIVE="reviewdog_${VERSION}_${OS}_${ARCH}.tar.gz"
 
 DOWNLOAD_URL="${BASE_URL}/releases/download/v${VERSION}/${ARCHIVE}"
@@ -152,10 +126,6 @@ curl \
     --retry-all-errors \
     --output "$TMP_ARCHIVE" \
     "$DOWNLOAD_URL"
-
-# ============================================================
-# Extract
-# ============================================================
 
 tar \
     -xzf "$TMP_ARCHIVE" \

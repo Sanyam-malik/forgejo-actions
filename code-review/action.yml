@@ -155,9 +155,6 @@ runs:
       id: megalinter
       uses: actions/megalinter@v8
       env:
-        # Let our own downstream filter-mode step (changed_files, diff_context,
-        # etc.) decide what's in-scope for comments; have MegaLinter itself
-        # just lint everything so nothing is missed either way.
         VALIDATE_ALL_CODEBASE: "true"
         DEFAULT_WORKSPACE: ${{ github.workspace }}/${{ inputs.workdir }}
         REPORT_OUTPUT_FOLDER: ${{ github.workspace }}/megalinter-reports
@@ -166,9 +163,6 @@ runs:
         DISABLE: ${{ env.MEGALINTER_DISABLE }}
         DISABLE_LINTERS: ${{ env.MEGALINTER_DISABLE_LINTERS }}
 
-        # We post our own Forgejo comments below; don't let MegaLinter's
-        # own reporters (written for GitHub/GitLab) try anything here,
-        # and don't let its own exit code fail the job out from under us.
         DISABLE_ERRORS: "true"
         SARIF_REPORTER: "true"
         SARIF_REPORTER_FILE_NAME: "megalinter-report.sarif"
@@ -209,17 +203,17 @@ runs:
         if [ ! -s "$SARIF_FILE" ]; then
           echo "No MegaLinter SARIF findings at $SARIF_FILE."
           echo "(Either nothing was flagged, or none of the matched linters support SARIF output.)"
-          : > reviewdog-results.txt
+          printf '%s\n' '{"diagnostics":[]}' > reviewdog-results.txt
         else
           reviewdog \
             -f=sarif \
             -name=megalinter \
-            -reporter=local \
+            -reporter=rdjson \
             -level="$REVIEWDOG_LEVEL" \
             -filter-mode=nofilter \
             -fail-level=none \
             < "$SARIF_FILE" \
-            > reviewdog-results.txt 2>&1
+            > reviewdog-results.txt
         fi
 
     - name: Post Forgejo review
@@ -229,6 +223,7 @@ runs:
         FORGEJO_TOKEN: ${{ inputs.token }}
         FORGEJO_API_URL: ${{ env.GITHUB_API_URL }}
         REVIEW_FILTER_MODE: ${{ inputs.filter-mode }}
+        REVIEW_FAIL_LEVEL: ${{ inputs.fail-level }}
 
         AI_SUGGESTIONS: ${{ inputs.ai-suggestions }}
         AI_BASE_URL: ${{ inputs.ai-base-url }}

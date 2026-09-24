@@ -182,10 +182,59 @@ echo "Head SHA: ${HEAD_SHA}"
 # Get changed files
 # ------------------------------------------------------------
 
-forgejo_api \
-    GET \
-    "/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/files" \
-    > .forgejo-pr-files.json
+# Forgejo paginates pull-request files. Fetch every page so large PRs are
+# not silently truncated to the server's default page size.
+rm -f .forgejo-pr-files.json .forgejo-pr-files-page.json
+printf '%s\n' '[]' > .forgejo-pr-files.json
+
+PAGE=1
+PAGE_SIZE=50
+while :; do
+    forgejo_api \
+        GET \
+        "/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/files?page=${PAGE}&limit=${PAGE_SIZE}" \
+        > .forgejo-pr-files-page.json
+
+    PAGE_COUNT="$(
+        python3 - .forgejo-pr-files-page.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+
+if not isinstance(data, list):
+    raise SystemExit("Forgejo pull-request files response is not an array")
+
+print(len(data))
+PY
+    )"
+
+    python3 - .forgejo-pr-files.json .forgejo-pr-files-page.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    existing = json.load(f)
+with open(sys.argv[2], encoding="utf-8") as f:
+    page = json.load(f)
+
+if not isinstance(existing, list) or not isinstance(page, list):
+    raise SystemExit("Forgejo pull-request files response is not an array")
+
+existing.extend(page)
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(existing, f, ensure_ascii=False)
+PY
+
+    if [ "$PAGE_COUNT" -lt "$PAGE_SIZE" ]; then
+        break
+    fi
+
+    PAGE=$((PAGE + 1))
+done
+
+rm -f .forgejo-pr-files-page.json
 
 echo
 echo "Changed files:"
@@ -216,6 +265,7 @@ python3 \
     "$RESULT_FILE" \
     .forgejo-pr-files.json \
     "$FILTER_MODE" \
+    "${REVIEW_FAIL_LEVEL:-none}" \
     "$API_URL" \
     "$OWNER" \
     "$REPO" \

@@ -19,6 +19,14 @@ VALID_FILTERS = {
     "nofilter",
 }
 
+VALID_FAIL_LEVELS = {
+    "none",
+    "any",
+    "info",
+    "warning",
+    "error",
+}
+
 CHANGED_FILE_STATUSES = {
     "added",
     "modified",
@@ -58,88 +66,158 @@ def normalize_path(path):
 # ------------------------------------------------------------
 
 def parse_reviewdog_line(line):
+    """Parse reviewdog's legacy local reporter output."""
     line = line.rstrip("\n")
 
     if not line.strip():
         return None
 
-    # file:line:column message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+)"
-        r"\s+(?P<message>.+)$",
-        line,
+    patterns = (
+        re.compile(
+            r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+)"
+            r"\s+(?P<message>.+)$"
+        ),
+        re.compile(
+            r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):"
+            r"\s*(?P<message>.+)$"
+        ),
+        re.compile(
+            r"^(?P<path>.+?):(?P<line>\d+):"
+            r"\s*(?P<message>.+)$"
+        ),
+        re.compile(
+            r"^(?P<path>.+?):(?P<line>\d+)"
+            r"\s+(?P<message>.+)$"
+        ),
     )
 
-    if match:
-        return {
-            "path": normalize_path(match.group("path")),
-            "line": int(match.group("line")),
-            "column": int(match.group("column")),
-            "message": match.group("message").strip(),
-        }
-
-    # file:line:column: message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+):"
-        r"\s*(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": normalize_path(match.group("path")),
-            "line": int(match.group("line")),
-            "column": int(match.group("column")),
-            "message": match.group("message").strip(),
-        }
-
-    # file:line: message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+):"
-        r"\s*(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": normalize_path(match.group("path")),
-            "line": int(match.group("line")),
-            "column": None,
-            "message": match.group("message").strip(),
-        }
-
-    # file:line message
-    match = re.match(
-        r"^(?P<path>.+?):(?P<line>\d+)"
-        r"\s+(?P<message>.+)$",
-        line,
-    )
-
-    if match:
-        return {
-            "path": normalize_path(match.group("path")),
-            "line": int(match.group("line")),
-            "column": None,
-            "message": match.group("message").strip(),
-        }
+    for pattern in patterns:
+        match = pattern.match(line)
+        if match:
+            return {
+                "path": normalize_path(match.group("path")),
+                "line": int(match.group("line")),
+                "column": (
+                    int(match.group("column"))
+                    if match.groupdict().get("column")
+                    else None
+                ),
+                "message": match.group("message").strip(),
+            }
 
     return None
 
 
+def parse_rdjson_diagnostic(diagnostic, source=None):
+    """Convert one reviewdog RDJSON diagnostic into our internal finding."""
+    if not isinstance(diagnostic, dict):
+        return None
+
+    location = diagnostic.get("location") or {}
+    path = location.get("path")
+    range_data = location.get("range") or {}
+    start = range_data.get("start") or {}
+
+    if not path:
+        return None
+
+    try:
+        line = int(start.get("line"))
+    except (TypeError, ValueError):
+        return None
+
+    if line < 1:
+        return None
+
+    column = start.get("column")
+    try:
+        column = int(column) if column is not None else None
+    except (TypeError, ValueError):
+        column = None
+
+    message = diagnostic.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+
+    severity = str(diagnostic.get("severity", "")).upper()
+    level = {
+        "ERROR": "error",
+        "WARNING": "warning",
+        "INFO": "info",
+    }.get(severity)
+
+    source_data = diagnostic.get("source")
+    if not isinstance(source_data, dict):
+        source_data = source if isinstance(source, dict) else {}
+
+    tool = source_data.get("name")
+    if not isinstance(tool, str):
+        tool = None
+
+    code_data = diagnostic.get("code")
+    code = None
+    if isinstance(code_data, dict):
+        value = code_data.get("value")
+        if isinstance(value, str) and value.strip():
+            code = value.strip()
+
+    text = message.strip()
+    if code and code not in text:
+        text = f"{code}: {text}"
+
+    if tool:
+        prefix = f"[{tool}]"
+        if level:
+            prefix += f" {level}"
+        text = f"{prefix} {text}"
+
+    return {
+        "path": normalize_path(path),
+        "line": line,
+        "column": column,
+        "message": text,
+        "_severity": level,
+    }
+
+
 def parse_findings(result_file):
-    findings = []
+    """Parse structured reviewdog RDJSON; retain legacy local-output fallback."""
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as exc:
+        die(f"Failed to read reviewdog results: {exc}")
 
-    with open(
-        result_file,
-        "r",
-        encoding="utf-8",
-        errors="replace",
-    ) as f:
-        for raw_line in f:
+    if not raw.strip():
+        return []
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        findings = []
+        for raw_line in raw.splitlines():
             finding = parse_reviewdog_line(raw_line)
-
             if finding is not None:
                 findings.append(finding)
+        return findings
+
+    if not isinstance(data, dict) or "diagnostics" not in data:
+        return []
+
+    diagnostics = data.get("diagnostics")
+    if not isinstance(diagnostics, list):
+        return []
+
+    source = data.get("source")
+    findings = []
+
+    for diagnostic in diagnostics:
+        finding = parse_rdjson_diagnostic(
+            diagnostic,
+            source=source,
+        )
+        if finding is not None:
+            findings.append(finding)
 
     return findings
 
@@ -205,6 +283,87 @@ def build_changed_files(pr_files):
     return changed
 
 
+def parse_unified_diff_changed_lines(diff_text, context_lines=3):
+    """Return changed/context line numbers keyed by normalized new-file path."""
+    added_lines = {}
+    context_candidates = {}
+    current_path = None
+    old_line = None
+    new_line = None
+    context_budget = max(0, int(context_lines))
+
+    for raw in diff_text.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].strip()
+            if path == "/dev/null":
+                current_path = None
+            else:
+                if path.startswith("b/"):
+                    path = path[2:]
+                current_path = normalize_path(path)
+            continue
+
+        if raw.startswith("@@ "):
+            match = re.match(
+                r"^@@ -\d+(?:,\d+)? \+(?P<new>\d+)(?:,(?P<count>\d+))? @@",
+                raw,
+            )
+            if not match:
+                current_path = None
+                old_line = None
+                new_line = None
+                continue
+
+            new_line = int(match.group("new"))
+            old_line = 0
+            continue
+
+        if current_path is None or new_line is None:
+            continue
+
+        if raw.startswith("+") and not raw.startswith("+++"):
+            added_lines.setdefault(current_path, set()).add(new_line)
+            new_line += 1
+            continue
+
+        if raw.startswith("-") and not raw.startswith("---"):
+            continue
+
+        if raw.startswith(" ") or raw == "":
+            context_candidates.setdefault(current_path, set()).add(new_line)
+            new_line += 1
+
+    if context_budget == 0:
+        return added_lines, added_lines
+
+    context_lines_by_file = {}
+    for path, changed in added_lines.items():
+        selected = set(changed)
+        for line in context_candidates.get(path, set()):
+            if any(abs(line - changed_line) <= context_budget for changed_line in changed):
+                selected.add(line)
+        context_lines_by_file[path] = selected
+
+    return added_lines, context_lines_by_file
+
+
+def filter_findings_by_diff_lines(findings, diff_lines, mode):
+    if mode not in {"added", "diff_context"}:
+        return findings
+
+    selected = diff_lines[0 if mode == "added" else 1]
+    result = []
+
+    for finding in findings:
+        path = normalize_path(finding.get("path", ""))
+        line = finding.get("line")
+        if path in selected and isinstance(line, int):
+            if line in selected[path]:
+                result.append(finding)
+
+    return result
+
+
 def finding_matches_file(
     finding,
     changed_files,
@@ -263,18 +422,11 @@ def filter_findings(
         if filter_mode in {
             "changed_files",
             "file",
+            "added",
+            "diff_context",
         }:
             if status not in CHANGED_FILE_STATUSES:
                 continue
-
-        elif filter_mode == "added":
-            if status != "added":
-                continue
-
-        elif filter_mode == "diff_context":
-            # The reporter currently operates at file scope.
-            # Keep findings from changed files.
-            pass
 
         finding["path"] = matched_path
         finding["_status"] = status
@@ -1113,6 +1265,54 @@ def post_review(
         return False
 
 
+def fetch_pull_diff(api_url, owner, repo, pr_number, token):
+    url = (
+        f"{api_url.rstrip('/')}/repos/{owner}/{repo}"
+        f"/pulls/{pr_number}.diff"
+    )
+
+    req = request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "text/plain",
+        },
+    )
+
+    try:
+        with request.urlopen(req, timeout=60) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except error.HTTPError as exc:
+        print(f"WARNING: Could not fetch pull-request diff (HTTP {exc.code}).")
+    except (error.URLError, TimeoutError):
+        print("WARNING: Could not fetch pull-request diff.")
+
+    return ""
+
+
+def should_fail(findings, fail_level):
+    if fail_level == "none" or not findings:
+        return False
+
+    if fail_level == "any":
+        return True
+
+    rank = {
+        "info": 1,
+        "warning": 2,
+        "error": 3,
+    }
+    threshold = rank[fail_level]
+
+    for finding in findings:
+        severity = finding.get("_severity") or "info"
+        if rank.get(str(severity).lower(), 1) >= threshold:
+            return True
+
+    return False
+
+
 # ------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------
@@ -1155,12 +1355,13 @@ def print_summary(
 # ------------------------------------------------------------
 
 def main():
-    if len(sys.argv) != 10:
+    if len(sys.argv) != 11:
         die(
             "Usage: forgejo-review.py "
             "<reviewdog-results> "
             "<pr-files.json> "
             "<filter> "
+            "<fail-level> "
             "<api-url> "
             "<owner> "
             "<repo> "
@@ -1172,17 +1373,23 @@ def main():
     result_file = sys.argv[1]
     pr_files_file = sys.argv[2]
     filter_mode = sys.argv[3]
-    api_url = sys.argv[4]
-    owner = sys.argv[5]
-    repo = sys.argv[6]
-    pr_number = sys.argv[7]
-    head_sha = sys.argv[8]
-    token = sys.argv[9]
+    fail_level = sys.argv[4]
+    api_url = sys.argv[5]
+    owner = sys.argv[6]
+    repo = sys.argv[7]
+    pr_number = sys.argv[8]
+    head_sha = sys.argv[9]
+    token = sys.argv[10]
 
     if filter_mode not in VALID_FILTERS:
         die(
             f"Unsupported filter mode: "
             f"{filter_mode}"
+        )
+
+    if fail_level not in VALID_FAIL_LEVELS:
+        die(
+            f"Unsupported fail level: {fail_level}"
         )
 
     if not head_sha:
@@ -1234,6 +1441,32 @@ def main():
         filtered
     )
 
+    if filter_mode in {"added", "diff_context"} and filtered:
+        print("Fetching pull-request diff for line-level filtering...")
+        diff_text = fetch_pull_diff(
+            api_url=api_url,
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            token=token,
+        )
+
+        if not diff_text:
+            die(
+                "Could not fetch pull-request diff required for "
+                f"filter mode '{filter_mode}'."
+            )
+
+        diff_lines = parse_unified_diff_changed_lines(
+            diff_text,
+            context_lines=3,
+        )
+        filtered = filter_findings_by_diff_lines(
+            filtered,
+            diff_lines,
+            filter_mode,
+        )
+
     # --------------------------------------------------------
     # Optional AI enrichment
     # --------------------------------------------------------
@@ -1269,6 +1502,17 @@ def main():
         skipped_count=skipped_count,
     )
 
+    fail_job = should_fail(
+        filtered,
+        fail_level,
+    )
+
+    print(
+        f"Fail level: {fail_level}"
+    )
+    print(
+        f"Fail threshold matched: {'yes' if fail_job else 'no'}"
+    )
     print()
 
     if not filtered:
@@ -1276,14 +1520,14 @@ def main():
             "No findings matched the "
             "configured Forgejo filter mode."
         )
-        return 0
+        return 1 if fail_job else 0
 
     if not comments:
         print(
             "No findings can be placed as "
             "inline Forgejo comments."
         )
-        return 0
+        return 1 if fail_job else 0
 
     print(
         "Posting Forgejo review..."
