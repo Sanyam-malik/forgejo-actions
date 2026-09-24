@@ -43,7 +43,7 @@ inputs:
     description: >
       Minimum reviewdog severity: info, warning, or error.
     required: false
-    default: "error"
+    default: "info"
 
   filter-mode:
     description: >
@@ -56,7 +56,7 @@ inputs:
     description: >
       Fail threshold: none, any, info, warning, or error.
     required: false
-    default: "none"
+    default: "error"
 
   reviewdog-version:
     description: >
