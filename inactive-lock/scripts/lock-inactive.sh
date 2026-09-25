@@ -124,7 +124,6 @@ echo "Pull requests   : ${PROCESS_PULL_REQUESTS}"
 echo "Include drafts  : ${INCLUDE_DRAFTS}"
 echo "Excluded labels : ${EXCLUDE_LABELS:-<none>}"
 echo "Dry run         : ${DRY_RUN}"
-echo "Page size       : ${PAGE_SIZE}"
 echo "============================================================"
 
 ###############################################################################
