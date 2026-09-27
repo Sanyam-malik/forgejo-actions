@@ -1,272 +1,141 @@
-name: Comment on Pull Request
-description: Post (or update) a markdown comment on the pull request associated with the current ref
+name: 'Post PR Comments'
+description: >
+  Post inline pull-request review comments to a Forgejo (or Gitea) PR,
+  driven by a JSON file of items and a message template. Generic —
+  no assumptions about linters, reviewdog, or any particular tool.
 
 inputs:
-  body:
-    description: Markdown comment body to post. Ignored if body_path is set.
-    required: false
-    default: ""
-
-  body_path:
-    description: Path to a file containing the markdown comment body. Takes precedence over body if both are set.
-    required: false
-    default: ""
-
-  marker:
+  items-file:
     description: >
-      A unique string (e.g. an HTML comment like "<!-- my-tool-summary -->")
-      used to find a previous comment to update in place. It is prepended
-      to the comment body if the body does not already start with it. Leave
-      empty to always post a new comment instead of upserting.
-    required: false
-    default: ""
+      Path to a JSON file containing an array of items, one per comment.
+      Each item can be any nested shape (e.g.
+      [{"location": {"file": "src/app.py", "range": {"start": {"line": 42}}},
+      "message": "..."}]) -- path-field/line-field say where to find the
+      position, and the rest is available to the message template.
+    required: true
 
-  pr_number:
-    description: Pull request number to comment on. If empty, it is auto-detected from the triggering event or the current branch's open pull request.
-    required: false
-    default: ""
+  message-template-file:
+    description: >
+      Path to a file containing the template for each comment body.
+      Placeholders use a small dotted/indexed path syntax that reaches
+      into nested JSON, e.g. "{message}", "{location.file}",
+      "{range.start.line}", "{tags[0]}". A placeholder that doesn't
+      resolve for a given item is left as literal text rather than
+      failing the run, so one template can tolerate items of varying
+      shape.
+    required: true
 
-  fail_if_no_pr:
-    description: Fail the action if no pull request could be found to comment on.
+  path-field:
+    description: >
+      Dotted/indexed path into each item for the file path the comment
+      attaches to, e.g. "path" or "location.file".
     required: false
-    default: "false"
+    default: 'location.file'
 
-  token:
-    description: API token used to authenticate with the Forgejo/GitHub API.
+  line-field:
+    description: >
+      Dotted/indexed path into each item for the 1-based line number the
+      comment attaches to, e.g. "line" or "range.start.line". This is
+      the one fixed lookup every item must resolve, however the rest of
+      the item's JSON is shaped.
     required: false
-    default: ${{ github.token }}
+    default: 'range.start.line'
 
-  api_url:
-    description: Base API URL. Defaults to the current server's API.
+  review-body:
+    description: >
+      Template for the top-level review summary comment. Supports a
+      {count} placeholder for the number of comments being posted. Set
+      to '' (empty) to skip the top-level comment entirely and post only
+      the inline per-item comments.
+    required: false
+    default: '🤖 **Automated comments**\n\nPosting {count} comment(s).'
+
+  dedupe:
+    description: 'Drop duplicate (path, line, rendered body) comments before posting.'
+    required: false
+    default: 'true'
+
+  fail-on-comments:
+    description: 'If true, the action exits non-zero when one or more comments are posted.'
+    required: false
+    default: 'false'
+
+  api-url:
+    description: >
+      Base URL of the Forgejo/Gitea API, e.g. https://forgejo.example.com/api/v1.
+      Defaults to the runner-provided API URL for the current instance.
     required: false
     default: ${{ github.api_url }}
 
-  server_url:
-    description: Base server URL, used to derive api_url when api_url is empty.
+  owner:
+    description: >
+      Repository owner/organization. Defaults to the current repository's
+      owner.
     required: false
-    default: ${{ github.server_url }}
+    default: ${{ github.repository_owner }}
 
-  repository:
-    description: "owner/repo to comment on."
+  repo:
+    description: >
+      Repository name. Defaults to the current repository's name.
     required: false
-    default: ${{ github.repository }}
+    default: ${{ github.event.repository.name }}
 
-  ref_name:
-    description: Current ref name, used for pull request auto-detection when not triggered by a pull_request event.
+  pr-number:
+    description: >
+      Pull request number. Defaults to the number of the pull request
+      that triggered this workflow.
     required: false
-    default: ${{ github.ref_name }}
+    default: ${{ github.event.pull_request.number }}
 
-  head_ref:
-    description: Head ref of the pull request, used for auto-detection.
+  head-sha:
+    description: >
+      Commit SHA the review should be attached to. Defaults to the head
+      commit of the pull request that triggered this workflow.
     required: false
-    default: ${{ github.head_ref }}
+    default: ${{ github.event.pull_request.head.sha }}
 
-  event_name:
-    description: Name of the triggering event.
+  token:
+    description: >
+      Token used to post pull-request review comments. Defaults to the
+      Forgejo-provided GitHub-compatible workflow token; override with a
+      PAT if the default token lacks permission to create reviews.
     required: false
-    default: ${{ github.event_name }}
-
-  event_path:
-    description: Path to the event payload file, used to read the pull request number when triggered by pull_request.
-    required: false
-    default: ${{ github.event_path }}
+    default: ${{ github.token }}
 
 outputs:
-  comment_id:
-    description: ID of the comment that was created or updated. Empty if no comment was posted.
-    value: ${{ steps.comment.outputs.comment_id }}
-
-  action:
-    description: One of "created", "updated", or "skipped".
-    value: ${{ steps.comment.outputs.action }}
-
-  pr_number:
-    description: The pull request number that was commented on, if any.
-    value: ${{ steps.comment.outputs.pr_number }}
+  comments-posted:
+    description: 'Number of inline comments posted.'
+    value: ${{ steps.post.outputs.comments-posted }}
 
 runs:
-  using: composite
-
+  using: 'composite'
   steps:
-    - id: comment
+    - name: Setup Python
+      uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
+      with:
+        python_version: ${{ inputs.python-version }}
+
+    - name: Post PR comments
+      id: post
       shell: bash
       env:
-        BODY: ${{ inputs.body }}
-        BODY_PATH: ${{ inputs.body_path }}
-        MARKER: ${{ inputs.marker }}
-        PR_NUMBER_INPUT: ${{ inputs.pr_number }}
-        FAIL_IF_NO_PR: ${{ inputs.fail_if_no_pr }}
-        API_TOKEN: ${{ inputs.token }}
-        API_URL: ${{ inputs.api_url }}
-        SERVER_URL: ${{ inputs.server_url }}
-        REPOSITORY: ${{ inputs.repository }}
-        REF_NAME: ${{ inputs.ref_name }}
-        HEAD_REF: ${{ inputs.head_ref }}
-        EVENT_NAME: ${{ inputs.event_name }}
-        EVENT_PATH: ${{ inputs.event_path }}
-      run: |
-        set -euo pipefail
-
-        echo "action=skipped" >> "${GITHUB_OUTPUT}"
-        echo "comment_id=" >> "${GITHUB_OUTPUT}"
-        echo "pr_number=" >> "${GITHUB_OUTPUT}"
-
-        if [[ -z "${API_TOKEN}" ]]; then
-          echo "::warning::Skipping pull request comment because no API token is available."
-          exit 0
-        fi
-
-        # ------------------------------------------------------------
-        # Resolve the comment body
-        # ------------------------------------------------------------
-        BODY_FILE="$(mktemp)"
-        trap 'rm -f "${BODY_FILE}"' EXIT
-
-        if [[ -n "${BODY_PATH}" ]]; then
-          if [[ ! -s "${BODY_PATH}" ]]; then
-            echo "::warning::Skipping pull request comment because body_path '${BODY_PATH}' is missing or empty."
-            exit 0
-          fi
-          cp "${BODY_PATH}" "${BODY_FILE}"
-        elif [[ -n "${BODY}" ]]; then
-          printf '%s' "${BODY}" > "${BODY_FILE}"
-        else
-          echo "::warning::Skipping pull request comment because neither body nor body_path was provided."
-          exit 0
-        fi
-
-        if [[ -n "${MARKER}" ]] && ! head -n1 "${BODY_FILE}" | grep -qF "${MARKER}"; then
-          printf '%s\n%s' "${MARKER}" "$(cat "${BODY_FILE}")" > "${BODY_FILE}.marked"
-          mv "${BODY_FILE}.marked" "${BODY_FILE}"
-        fi
-
-        # ------------------------------------------------------------
-        # Resolve API base
-        # ------------------------------------------------------------
-        API_BASE="${API_URL:-}"
-        if [[ -z "${API_BASE}" ]]; then
-          API_BASE="${SERVER_URL%/}/api/v1"
-        fi
-        API_BASE="${API_BASE%/}"
-
-        # ------------------------------------------------------------
-        # Resolve the pull request number
-        # ------------------------------------------------------------
-        PR_NUMBER="${PR_NUMBER_INPUT}"
-
-        if [[ -z "${PR_NUMBER}" && "${EVENT_NAME}" == "pull_request" && -f "${EVENT_PATH}" ]]; then
-          PR_NUMBER="$(jq -r '.number // empty' "${EVENT_PATH}")"
-        fi
-
-        if [[ -z "${PR_NUMBER}" ]]; then
-          BRANCH="${HEAD_REF:-${REF_NAME}}"
-          OWNER="${REPOSITORY%%/*}"
-
-          if [[ -z "${BRANCH}" || -z "${OWNER}" || "${OWNER}" == "${REPOSITORY}" ]]; then
-            echo "No branch context available; skipping pull request comment."
-            if [[ "${FAIL_IF_NO_PR}" == "true" ]]; then
-              echo "::error::No pull request context available and fail_if_no_pr is true."
-              exit 1
-            fi
-            exit 0
-          fi
-
-          PULLS_URL="${API_BASE}/repos/${REPOSITORY}/pulls"
-          if ! PULLS_RESPONSE="$(
-            curl -fsS \
-              --retry 2 \
-              -H "Authorization: Bearer ${API_TOKEN}" \
-              -H "Accept: application/json" \
-              --get \
-              --data-urlencode "state=open" \
-              --data-urlencode "head=${OWNER}:${BRANCH}" \
-              "${PULLS_URL}"
-          )"; then
-            echo "::warning::Unable to determine whether branch '${BRANCH}' has an open pull request."
-            if [[ "${FAIL_IF_NO_PR}" == "true" ]]; then
-              exit 1
-            fi
-            exit 0
-          fi
-
-          PR_NUMBER="$(jq -r '.[0].number // empty' <<< "${PULLS_RESPONSE}")"
-        fi
-
-        if [[ -z "${PR_NUMBER}" ]]; then
-          echo "No open pull request found."
-          if [[ "${FAIL_IF_NO_PR}" == "true" ]]; then
-            echo "::error::No pull request found and fail_if_no_pr is true."
-            exit 1
-          fi
-          exit 0
-        fi
-
-        echo "pr_number=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
-
-        COMMENTS_URL="${API_BASE}/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments"
-
-        # ------------------------------------------------------------
-        # Look for a previous comment to update in place, when a
-        # marker was given. Without a marker, always post fresh.
-        # ------------------------------------------------------------
-        EXISTING_COMMENT_ID=""
-        if [[ -n "${MARKER}" ]]; then
-          if EXISTING_COMMENTS="$(
-            curl -fsS \
-              --retry 2 \
-              -H "Authorization: Bearer ${API_TOKEN}" \
-              -H "Accept: application/json" \
-              "${COMMENTS_URL}"
-          )"; then
-            EXISTING_COMMENT_ID="$(
-              jq -r --arg marker "${MARKER}" \
-                'map(select(.body | startswith($marker))) | .[0].id // empty' \
-                <<< "${EXISTING_COMMENTS}"
-            )"
-          else
-            echo "::warning::Unable to list existing comments on pull request #${PR_NUMBER}; will attempt to post a new one."
-          fi
-        fi
-
-        COMMENT_BODY="$(jq -Rs '{body: .}' < "${BODY_FILE}")"
-
-        if [[ -n "${EXISTING_COMMENT_ID}" ]]; then
-          UPDATE_URL="${API_BASE}/repos/${REPOSITORY}/issues/comments/${EXISTING_COMMENT_ID}"
-
-          if ! curl -fsS \
-            --retry 2 \
-            -X PATCH \
-            -H "Authorization: Bearer ${API_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            --data "${COMMENT_BODY}" \
-            "${UPDATE_URL}" >/dev/null; then
-            echo "::warning::Unable to update existing comment on pull request #${PR_NUMBER}."
-            exit 0
-          fi
-
-          echo "Updated comment on pull request #${PR_NUMBER}."
-          echo "comment_id=${EXISTING_COMMENT_ID}" >> "${GITHUB_OUTPUT}"
-          echo "action=updated" >> "${GITHUB_OUTPUT}"
-          exit 0
-        fi
-
-        if ! CREATE_RESPONSE="$(
-          curl -fsS \
-            --retry 2 \
-            -X POST \
-            -H "Authorization: Bearer ${API_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            --data "${COMMENT_BODY}" \
-            "${COMMENTS_URL}"
-        )"; then
-          echo "::warning::Unable to post comment to pull request #${PR_NUMBER}."
-          exit 0
-        fi
-
-        NEW_COMMENT_ID="$(jq -r '.id // empty' <<< "${CREATE_RESPONSE}")"
-
-        echo "Posted comment to pull request #${PR_NUMBER}."
-        echo "comment_id=${NEW_COMMENT_ID}" >> "${GITHUB_OUTPUT}"
-        echo "action=created" >> "${GITHUB_OUTPUT}"
+        ITEMS_FILE: ${{ inputs.items-file }}
+        MESSAGE_TEMPLATE_FILE: ${{ inputs.message-template-file }}
+        PATH_FIELD: ${{ inputs.path-field }}
+        LINE_FIELD: ${{ inputs.line-field }}
+        REVIEW_BODY: ${{ inputs.review-body }}
+        DEDUPE: ${{ inputs.dedupe }}
+        FAIL_ON_COMMENTS: ${{ inputs.fail-on-comments }}
+        # These five all have ${{ github.* }} defaults above, populated
+        # automatically for a pull_request-triggered job. The script does
+        # no further auto-detection -- override explicitly for other
+        # trigger types.
+        API_URL: ${{ inputs.api-url }}
+        OWNER: ${{ inputs.owner }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        # TOKEN defaults to ${{ github.token }} above, populated
+        # automatically.
+        TOKEN: ${{ inputs.token }}
+      run: python3 "${{ github.action_path }}/scripts/post-pr-comments.py"
