@@ -2,9 +2,8 @@ name: 'Multi-language Code Review'
 
 description: >
   Detects programming languages in a repository, runs open-source linters
-  through reviewdog, optionally generates AI descriptions and suggestions
-  using an OpenAI-compatible endpoint, and posts findings as inline comments
-  on Forgejo pull requests.
+  through reviewdog, and posts findings as inline comments on Forgejo pull
+  requests via the generic Post PR Comments action.
 
 inputs:
   token:
@@ -43,9 +42,9 @@ inputs:
     description: >
       Minimum severity posted as PR comments: info, warning, or error.
       Findings below this severity are parsed but dropped before
-      building comments. (This is enforced by the Forgejo posting step,
-      not by reviewdog's own -level flag, which does not filter output
-      for the rdjson reporter used here.)
+      building comments. (This is enforced when building the items
+      file, not by reviewdog's own -level flag, which does not filter
+      output for the rdjson reporter used here.)
     required: false
     default: "error"
 
@@ -58,7 +57,8 @@ inputs:
 
   fail-level:
     description: >
-      Fail threshold: none, any, info, warning, or error.
+      Fail threshold: none, any, info, warning, or error. Evaluated
+      against the findings that were actually turned into comments.
     required: false
     default: "none"
 
@@ -70,7 +70,7 @@ inputs:
 
   python-version:
     description: >
-      Python version used by the Forgejo reporter and AI suggestions.
+      Python version used to build the review-items file.
       Examples: 3, 3.11, 3.12.
     required: false
     default: "3"
@@ -79,54 +79,6 @@ inputs:
     description: Directory to run the review from.
     required: false
     default: "."
-
-  ai-suggestions:
-    description: >
-      Enable AI-generated descriptions and suggestions for existing
-      linter findings.
-    required: false
-    default: "false"
-
-  ai-base-url:
-    description: >
-      OpenAI-compatible API base URL.
-      Examples:
-      http://localhost:8080/v1
-      http://ollama:11434/v1
-      https://api.openai.com/v1
-    required: false
-    default: ""
-
-  ai-api-key:
-    description: >
-      API key for the OpenAI-compatible endpoint.
-      Can be empty for local endpoints that do not require authentication.
-    required: false
-    default: ""
-
-  ai-model:
-    description: >
-      Model used to generate descriptions and suggestions.
-    required: false
-    default: ""
-
-  ai-temperature:
-    description: >
-      Temperature used for AI suggestions.
-    required: false
-    default: "0"
-
-  ai-max-tokens:
-    description: >
-      Maximum tokens generated for each AI suggestion.
-    required: false
-    default: "1024"
-
-  ai-context-lines:
-    description: >
-      Number of source-code lines included before and after a finding.
-    required: false
-    default: "10"
 
 runs:
   using: composite
@@ -198,8 +150,6 @@ runs:
       id: review
       shell: bash
       working-directory: ${{ inputs.workdir }}
-      env:
-        REVIEWDOG_LEVEL: ${{ inputs.level }}
       run: |
         set -euo pipefail
 
@@ -214,33 +164,50 @@ runs:
             -f=sarif \
             -name=megalinter \
             -reporter=rdjson \
-            -level="$REVIEWDOG_LEVEL" \
             -filter-mode=nofilter \
             -fail-level=none \
             < "$SARIF_FILE" \
             > reviewdog-results.txt
         fi
 
-    - name: Post Forgejo review
+    - name: Build review items
+      id: build
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
-        FORGEJO_TOKEN: ${{ inputs.token }}
-        FORGEJO_API_URL: ${{ env.GITHUB_API_URL }}
-        REVIEW_FILTER_MODE: ${{ inputs.filter-mode }}
-        REVIEW_FAIL_LEVEL: ${{ inputs.fail-level }}
-        REVIEW_LEVEL: ${{ inputs.level }}
-
-        AI_SUGGESTIONS: ${{ inputs.ai-suggestions }}
-        AI_BASE_URL: ${{ inputs.ai-base-url }}
-        AI_API_KEY: ${{ inputs.ai-api-key }}
-        AI_MODEL: ${{ inputs.ai-model }}
-        AI_TEMPERATURE: ${{ inputs.ai-temperature }}
-        AI_MAX_TOKENS: ${{ inputs.ai-max-tokens }}
-        AI_CONTEXT_LINES: ${{ inputs.ai-context-lines }}
-
+        RESULT_FILE: reviewdog-results.txt
+        FILTER_MODE: ${{ inputs.filter-mode }}
+        LEVEL: ${{ inputs.level }}
+        FAIL_LEVEL: ${{ inputs.fail-level }}
+        ITEMS_OUTPUT: ${{ github.workspace }}/review-items.json
+        API_URL: ${{ github.api_url }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
 
-        "${{ github.action_path }}/scripts/forgejo-review.sh" \
-          reviewdog-results.txt
+        python3 "${{ github.action_path }}/scripts/build-review-items.py"
+
+    - name: Post PR comments
+      id: post
+      uses: ${{ github.action_repository }}/post-file-comment-action@${{ github.action_ref }}
+      with:
+        items-file: ${{ github.workspace }}/review-items.json
+        message-template-file: ${{ github.action_path }}/scripts/templates/review-comment.md
+        path-field: path
+        line-field: line
+        token: ${{ inputs.token }}
+        fail-on-comments: "false"
+
+    - name: Enforce fail level
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${{ steps.build.outputs.should-fail }}" = "true" ]; then
+          echo "Fail level '${{ inputs.fail-level }}' was met by the posted findings."
+          exit 1
+        fi
