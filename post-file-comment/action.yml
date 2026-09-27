@@ -113,7 +113,7 @@ runs:
     - name: Setup Python
       uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
       with:
-        python_version: ${{ inputs.python-version }}
+        python_version: "3"
 
     - name: Post PR comments
       id: post
