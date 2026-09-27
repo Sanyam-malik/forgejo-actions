@@ -193,7 +193,7 @@ runs:
 
     - name: Post PR comments
       id: post
-      uses: ${{ github.action_repository }}/post-file-comment-action@${{ github.action_ref }}
+      uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
         message-template-file: ${{ github.action_path }}/scripts/templates/review-comment.md
