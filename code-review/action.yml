@@ -68,13 +68,6 @@ inputs:
     required: false
     default: "latest"
 
-  python-version:
-    description: >
-      Python version used to build the review-items file.
-      Examples: 3, 3.11, 3.12.
-    required: false
-    default: "3"
-
   workdir:
     description: Directory to run the review from.
     required: false
@@ -144,7 +137,7 @@ runs:
     - name: Setup Python
       uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
       with:
-        python_version: ${{ inputs.python-version }}
+        python_version: "3"
 
     - name: Run reviewdog
       id: review
