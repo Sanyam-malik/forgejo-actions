@@ -48,7 +48,7 @@ inputs:
       to '' (empty) to skip the top-level comment entirely and post only
       the inline per-item comments.
     required: false
-    default: '🤖 **Automated comments**\n\nPosting {count} comment(s).'
+    default: ''
 
   dedupe:
     description: 'Drop duplicate (path, line, rendered body) comments before posting.'
