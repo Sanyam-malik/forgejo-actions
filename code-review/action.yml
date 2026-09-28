@@ -207,7 +207,7 @@ runs:
 
     - name: Post PR comments
       id: post
-      if: steps.review.outputs.item-count != "0"
+      if: steps.review.outputs.item-count != '0'
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json

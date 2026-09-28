@@ -231,7 +231,7 @@ runs:
         python3 "${{ github.action_path }}/scripts/ai-review.py"
 
     - name: Post PR comments
-      if: steps.review.outputs.item-count != "0"
+      if: steps.review.outputs.item-count != '0'
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/ai-review-items.json
