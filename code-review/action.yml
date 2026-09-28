@@ -206,7 +206,6 @@ runs:
         python3 "${{ github.action_path }}/scripts/build-review-items.py"
 
     - name: Post PR comments
-      id: post
       if: ${{ steps.review.outputs.item-count != '0' && steps.review.outputs.item-count != '' }}
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
