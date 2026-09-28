@@ -207,7 +207,7 @@ runs:
 
     - name: Post PR comments
       id: post
-      if: steps.review.outputs.item-count != '0'
+      if: ${{ steps.review.outputs.item-count != '0' && steps.review.outputs.item-count != '' }}
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
@@ -221,11 +221,8 @@ runs:
         fail-on-comments: "false"
 
     - name: Enforce fail level
+      if: ${{ steps.review.outputs.should-fail == 'true' }}
       shell: bash
       run: |
-        set -euo pipefail
-
-        if [ "${{ steps.build.outputs.should-fail }}" = "true" ]; then
-          echo "Fail level '${{ inputs.fail-level }}' was met by the posted findings."
-          exit 1
-        fi
+        echo "Fail level '${{ inputs.fail-level }}' was met by the AI review findings."
+        exit 1

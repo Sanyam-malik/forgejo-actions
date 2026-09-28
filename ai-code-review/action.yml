@@ -231,7 +231,7 @@ runs:
         python3 "${{ github.action_path }}/scripts/ai-review.py"
 
     - name: Post PR comments
-      if: steps.review.outputs.item-count != '0'
+      if: ${{ steps.review.outputs.item-count != '0' && steps.review.outputs.item-count != '' }}
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/ai-review-items.json
@@ -243,7 +243,7 @@ runs:
         fail-on-comments: "false"
 
     - name: Enforce fail level
-      if: steps.review.outputs.should-fail == 'true'
+      if: ${{ steps.review.outputs.should-fail == 'true' }}
       shell: bash
       run: |
         echo "Fail level '${{ inputs.fail-level }}' was met by the AI review findings."
