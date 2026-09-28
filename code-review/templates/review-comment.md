@@ -14,4 +14,4 @@
 
 {doc_link}
 
-{footer}
+{footer}{fingerprint_marker}

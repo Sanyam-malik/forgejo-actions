@@ -13,10 +13,12 @@ rule_code, rule_url, message, and a few pre-rendered convenience fields
 template doesn't need conditional logic for optional pieces.
 """
 
+import hashlib
 import json
 import os
 import re
 import sys
+from pathlib import Path
 from urllib import error
 from urllib import request
 
@@ -78,6 +80,11 @@ MESSAGE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Hidden marker appended to every posted comment. On later runs (new pushes)
+# it lets us skip findings that were already commented on, so only new or
+# changed findings are posted.
+FINGERPRINT_RE = re.compile(r"<!--\s*lint-review:([0-9a-f]{8,40})\s*-->")
+
 RULE_CODE_PATTERNS = (
     re.compile(r"^(?P<code>[A-Z]{1,5}\d{2,5}(?:/[\w-]+)?)\b"),
     re.compile(r"[\[(](?:[A-Za-z]+/)?(?P<code>[A-Za-z0-9_.-]+)[\])]\s*$"),
@@ -94,6 +101,15 @@ def env(name, required=True, default=""):
     if required and not value.strip():
         die(f"Required input/env var {name} is empty.")
     return value
+
+
+def env_bool(name, default=False):
+    value = os.environ.get(name, "").strip().lower()
+    if value in {"true", "1", "yes"}:
+        return True
+    if value in {"false", "0", "no"}:
+        return False
+    return default
 
 
 def write_output(name, value):
@@ -516,6 +532,126 @@ def should_fail(findings, fail_level):
 
 
 # ------------------------------------------------------------
+# Fingerprints: only post findings that were not commented on already
+# ------------------------------------------------------------
+
+def forgejo_get_paged(api_url, owner, repo, suffix, token, limit=50, max_pages=20):
+    results = []
+    previous = None
+    joiner = "&" if "?" in suffix else "?"
+
+    for page in range(1, max_pages + 1):
+        url = (
+            f"{api_url.rstrip('/')}/repos/{owner}/{repo}{suffix}"
+            f"{joiner}page={page}&limit={limit}"
+        )
+        req = request.Request(
+            url,
+            method="GET",
+            headers={"Authorization": f"token {token}", "Accept": "application/json"},
+        )
+        with request.urlopen(req, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+
+        if not isinstance(data, list) or not data or data == previous:
+            break
+
+        results.extend(data)
+
+        if len(data) < limit:
+            break
+
+        previous = data
+
+    return results
+
+
+def fetch_existing_fingerprints(api_url, owner, repo, pr_number, token):
+    """Fingerprints of lint comments already posted on this PR. Best effort:
+    on any failure we warn and treat it as 'nothing posted yet'."""
+    found = set()
+    try:
+        reviews = forgejo_get_paged(api_url, owner, repo, f"/pulls/{pr_number}/reviews", token)
+        for review in reviews:
+            review_id = review.get("id")
+            if review_id is None:
+                continue
+            comments = forgejo_get_paged(
+                api_url,
+                owner,
+                repo,
+                f"/pulls/{pr_number}/reviews/{review_id}/comments",
+                token,
+            )
+            for comment in comments:
+                found.update(FINGERPRINT_RE.findall(str(comment.get("body") or "")))
+    except Exception as exc:
+        print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
+    return found
+
+
+def read_source_line(path, line):
+    """The text of path:line from the checked-out tree, or None."""
+    if not path or not isinstance(line, int) or line < 1:
+        return None
+
+    bases = [Path(".")]
+    workspace = os.environ.get("GITHUB_WORKSPACE", "").strip()
+    if workspace:
+        bases.append(Path(workspace))
+
+    for base in bases:
+        candidate = base / path
+        if not candidate.is_file():
+            continue
+        try:
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        return lines[line - 1] if line <= len(lines) else None
+
+    return None
+
+
+def collapse_whitespace(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def assign_fingerprints(items):
+    """Give each item a stable fingerprint + hidden marker.
+
+    The fingerprint is built from what the finding *is* (file, tool, rule,
+    message and the text of the flagged line) rather than where it is, so
+    unrelated edits that only shift line numbers don't re-post old comments,
+    while a changed message or changed flagged line counts as a new finding.
+    Identical findings on identical lines get an occurrence index so they
+    stay distinct."""
+    seen = {}
+
+    for item in sorted(items, key=lambda i: (i["path"], i["line"])):
+        source_line = read_source_line(item["path"], item["line"])
+
+        parts = [
+            item["path"],
+            item["tool"],
+            item["rule_code"],
+            collapse_whitespace(item["message"]),
+            # Fall back to the line number if the source isn't available.
+            collapse_whitespace(source_line) if source_line is not None else f"line:{item['line']}",
+        ]
+
+        base = "|".join(parts)
+        occurrence = seen.get(base, 0)
+        seen[base] = occurrence + 1
+
+        fingerprint = hashlib.sha1(f"{base}|{occurrence}".encode("utf-8")).hexdigest()[:12]
+        item["fingerprint"] = fingerprint
+        item["fingerprint_marker"] = f"\n<!-- lint-review:{fingerprint} -->"
+
+    return items
+
+
+# ------------------------------------------------------------
 # Message parsing + non-AI (rule-doc-based) enrichment
 # ------------------------------------------------------------
 
@@ -645,6 +781,7 @@ def main():
     level = env("LEVEL", required=False, default="")
     fail_level = env("FAIL_LEVEL", required=False, default="none")
     items_output = env("ITEMS_OUTPUT", required=False, default="review-items.json")
+    skip_existing = env_bool("SKIP_EXISTING", True)
 
     api_url = env("API_URL")
     owner = env("OWNER")
@@ -688,14 +825,28 @@ def main():
     print(f"Fail level: {fail_level}")
     print(f"Fail threshold matched: {'yes' if fail else 'no'}")
 
-    items = [build_display_item(f) for f in filtered]
+    items = assign_fingerprints([build_display_item(f) for f in filtered])
+    total_count = len(items)
+
+    skipped_existing = 0
+    if skip_existing and items:
+        existing = fetch_existing_fingerprints(api_url, owner, repo, pr_number, token)
+        new_items = [i for i in items if i["fingerprint"] not in existing]
+        skipped_existing = len(items) - len(new_items)
+        if skipped_existing:
+            print(f"Skipped {skipped_existing} finding(s) already commented on earlier.")
+        items = new_items
 
     with open(items_output, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
 
-    print(f"Wrote {len(items)} item(s) to {items_output}.")
+    print(f"Wrote {len(items)} new item(s) to {items_output} ({total_count} current finding(s) in total).")
 
     write_output("item-count", str(len(items)))
+    write_output("total-count", str(total_count))
+    write_output("skipped-existing-count", str(skipped_existing))
+    # Evaluated on ALL current findings, not just the new ones, so a PR with
+    # an unresolved error keeps failing even though its comment already exists.
     write_output("should-fail", "true" if fail else "false")
 
     return 0
