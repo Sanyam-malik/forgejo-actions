@@ -62,6 +62,17 @@ inputs:
     required: false
     default: "none"
 
+  skip-existing:
+    description: >
+      Only post findings that were not already commented on by an earlier
+      run. Each comment carries a hidden fingerprint of the finding (file,
+      tool, rule, message and the flagged line's text), so pushing new
+      commits adds only new or changed findings, and edits that merely
+      shift line numbers do not repost old ones. fail-level is still
+      evaluated against all current findings.
+    required: false
+    default: "true"
+
   reviewdog-version:
     description: >
       Reviewdog version. Use latest or vX.Y.Z.
@@ -172,6 +183,7 @@ runs:
         FILTER_MODE: ${{ inputs.filter-mode }}
         LEVEL: ${{ inputs.level }}
         FAIL_LEVEL: ${{ inputs.fail-level }}
+        SKIP_EXISTING: ${{ inputs.skip-existing }}
         ITEMS_OUTPUT: ${{ github.workspace }}/review-items.json
         API_URL: ${{ github.api_url }}
         OWNER: ${{ github.repository_owner }}
@@ -186,6 +198,7 @@ runs:
 
     - name: Post PR comments
       id: post
+      if: steps.review.outputs.item-count != '0'
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
