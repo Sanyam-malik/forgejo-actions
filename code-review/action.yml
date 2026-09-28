@@ -189,7 +189,7 @@ runs:
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
-        message-template-file: ${{ github.action_path }}/scripts/templates/review-comment.md
+        message-template-file: ${{ github.action_path }}/templates/review-comment.md
         review-body: |
           **🤖Automated code review by MegaLinter and reviewdog.**
           Posting {count} comment(s)

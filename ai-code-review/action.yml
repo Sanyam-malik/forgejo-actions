@@ -1,0 +1,250 @@
+name: 'AI Code Review'
+
+description: >
+  Reviews the files changed in a Forgejo/Gitea pull request with an LLM
+  served from any OpenAI-compatible endpoint (Ollama, llama.cpp server,
+  vLLM, OpenAI, ...) and posts the findings as inline PR comments via the
+  generic Post PR Comments action. No linters involved.
+
+inputs:
+  # ---- model endpoint -------------------------------------------------
+  ai-base-url:
+    description: >
+      OpenAI-compatible API base URL (the part before /chat/completions).
+      Examples: http://ollama:11434/v1, http://llama-cpp:8080/v1,
+      https://api.openai.com/v1
+    required: true
+
+  ai-model:
+    description: Model name sent to the endpoint, e.g. qwen2.5-coder:14b or gpt-4o.
+    required: true
+
+  ai-api-key:
+    description: >
+      API key sent as a Bearer token. Leave empty for local endpoints that
+      do not require authentication.
+    required: false
+    default: ""
+
+  ai-temperature:
+    description: Sampling temperature. Low values give more consistent reviews.
+    required: false
+    default: "0.1"
+
+  ai-max-tokens:
+    description: >
+      Maximum tokens the model may generate per request. Requests can cover
+      several files, so this is generous by default.
+    required: false
+    default: "4096"
+
+  ai-timeout:
+    description: Per-request timeout in seconds (local models can be slow).
+    required: false
+    default: "180"
+
+  ai-json-mode:
+    description: >
+      Ask the endpoint for JSON output (response_format json_object). If the
+      endpoint rejects it, the request is retried without it automatically.
+    required: false
+    default: "true"
+
+  # ---- what to review -------------------------------------------------
+  focus:
+    description: Comma separated review focus areas given to the model.
+    required: false
+    default: "correctness, security, reliability, performance, maintainability, testing"
+
+  extra-instructions:
+    description: Extra free-text instructions appended to the review prompt.
+    required: false
+    default: ""
+
+  guidelines-file:
+    description: >
+      Path (relative to the workspace) to a file with project conventions,
+      e.g. CONTRIBUTING.md or docs/review-guidelines.md. The first 6000
+      characters are added to the prompt.
+    required: false
+    default: ""
+
+  system-prompt-file:
+    description: >
+      Path to a file that replaces the built-in system prompt. It must keep
+      the JSON output contract; see scripts/prompts/system.md.
+    required: false
+    default: ""
+
+  include:
+    description: >
+      Comma or newline separated glob patterns. When set, only matching
+      files are reviewed. Patterns without a slash also match the file name.
+    required: false
+    default: ""
+
+  exclude:
+    description: >
+      Comma or newline separated glob patterns to skip. Leave empty to use
+      the built-in list (lockfiles, minified/generated files, images,
+      vendored and build directories). Set to "none" to review everything.
+    required: false
+    default: ""
+
+  # ---- noise control --------------------------------------------------
+  level:
+    description: "Minimum severity to post: info, warning, or error."
+    required: false
+    default: "warning"
+
+  min-confidence:
+    description: Drop findings the model rates below this confidence (0 to 1).
+    required: false
+    default: "0.5"
+
+  max-comments:
+    description: >
+      Maximum inline comments to post, highest severity first. 0 means no
+      limit.
+    required: false
+    default: "0"
+
+  skip-existing:
+    description: >
+      Skip findings that an earlier run already commented on, so pushing
+      new commits does not repeat the same comments.
+    required: false
+    default: "true"
+
+  # ---- limits ---------------------------------------------------------
+  max-files:
+    description: Maximum number of changed files to review. 0 means no limit.
+    required: false
+    default: "0"
+
+  max-chars:
+    description: >
+      Maximum diff characters per request (about 4 characters per token).
+      Lower this for models with a small context window; large files are
+      split into several requests.
+    required: false
+    default: "20000"
+
+  max-requests:
+    description: Maximum total requests to the model in one run. 0 means no limit.
+    required: false
+    default: "0"
+
+  concurrency:
+    description: >
+      Parallel requests to the model. Lower it (1 to 2) for a single-GPU
+      local server that handles one request at a time, and raise
+      ai-timeout if requests queue up.
+    required: false
+    default: "4"
+
+  batch-files:
+    description: >
+      Pack several small files into one request so big PRs need only a few
+      model calls. Set to false to send one file per request (slower, but
+      the most focused prompts for small local models).
+    required: false
+    default: "true"
+
+  # ---- behaviour ------------------------------------------------------
+  fail-level:
+    description: >
+      Fail the job if a posted finding reaches this severity: none, any,
+      info, warning, or error.
+    required: false
+    default: "none"
+
+  fail-on-ai-error:
+    description: >
+      Fail the job if any request to the model fails. By default an
+      unreachable model only logs a warning and never blocks the PR.
+    required: false
+    default: "false"
+
+  token:
+    description: >
+      Token used to read the pull request and post review comments.
+      Defaults to the Forgejo-provided GitHub-compatible workflow token.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  item-count:
+    description: Number of findings turned into comments.
+    value: ${{ steps.review.outputs.item-count }}
+
+  should-fail:
+    description: '"true" if fail-level was met by the findings.'
+    value: ${{ steps.review.outputs.should-fail }}
+
+runs:
+  using: composite
+
+  steps:
+    - name: Setup Python
+      uses: ${{ github.action_repository }}/setup-python@${{ github.action_ref }}
+      with:
+        python_version: "3"
+
+    - name: Run AI review
+      id: review
+      shell: bash
+      env:
+        AI_BASE_URL: ${{ inputs.ai-base-url }}
+        AI_MODEL: ${{ inputs.ai-model }}
+        AI_API_KEY: ${{ inputs.ai-api-key }}
+        AI_TEMPERATURE: ${{ inputs.ai-temperature }}
+        AI_MAX_TOKENS: ${{ inputs.ai-max-tokens }}
+        AI_TIMEOUT: ${{ inputs.ai-timeout }}
+        AI_JSON_MODE: ${{ inputs.ai-json-mode }}
+        FOCUS: ${{ inputs.focus }}
+        EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+        GUIDELINES_FILE: ${{ inputs.guidelines-file }}
+        SYSTEM_PROMPT_FILE: ${{ inputs.system-prompt-file }}
+        INCLUDE: ${{ inputs.include }}
+        EXCLUDE: ${{ inputs.exclude }}
+        LEVEL: ${{ inputs.level }}
+        MIN_CONFIDENCE: ${{ inputs.min-confidence }}
+        MAX_COMMENTS: ${{ inputs.max-comments }}
+        SKIP_EXISTING: ${{ inputs.skip-existing }}
+        MAX_FILES: ${{ inputs.max-files }}
+        MAX_CHARS: ${{ inputs.max-chars }}
+        MAX_REQUESTS: ${{ inputs.max-requests }}
+        CONCURRENCY: ${{ inputs.concurrency }}
+        BATCH_FILES: ${{ inputs.batch-files }}
+        FAIL_LEVEL: ${{ inputs.fail-level }}
+        FAIL_ON_AI_ERROR: ${{ inputs.fail-on-ai-error }}
+        ITEMS_OUTPUT: ${{ github.workspace }}/ai-review-items.json
+        API_URL: ${{ github.api_url }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        python3 "${{ github.action_path }}/scripts/ai-review.py"
+
+    - name: Post PR comments
+      if: steps.review.outputs.item-count != '0'
+      uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
+      with:
+        items-file: ${{ github.workspace }}/ai-review-items.json
+        message-template-file: ${{ github.action_path }}/templates/review-comment.md
+        path-field: path
+        line-field: line
+        token: ${{ inputs.token }}
+        review-body: ${{ inputs.post-summary == 'true' && steps.review.outputs.summary || '' }}
+        fail-on-comments: "false"
+
+    - name: Enforce fail level
+      if: steps.review.outputs.should-fail == 'true'
+      shell: bash
+      run: |
+        echo "Fail level '${{ inputs.fail-level }}' was met by the AI review findings."
+        exit 1
