@@ -845,8 +845,6 @@ def main():
     write_output("item-count", str(len(items)))
     write_output("total-count", str(total_count))
     write_output("skipped-existing-count", str(skipped_existing))
-    # Evaluated on ALL current findings, not just the new ones, so a PR with
-    # an unresolved error keeps failing even though its comment already exists.
     write_output("should-fail", "true" if fail else "false")
 
     return 0

@@ -84,6 +84,15 @@ inputs:
     required: false
     default: "."
 
+outputs:
+  item-count:
+    description: Number of findings turned into comments.
+    value: ${{ steps.review.outputs.item-count }}
+
+  should-fail:
+    description: '"true" if fail-level was met by the findings.'
+    value: ${{ steps.review.outputs.should-fail }}
+
 runs:
   using: composite
 
@@ -198,7 +207,7 @@ runs:
 
     - name: Post PR comments
       id: post
-      if: steps.review.outputs.item-count != '0'
+      if: steps.review.outputs.item-count != "0"
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
