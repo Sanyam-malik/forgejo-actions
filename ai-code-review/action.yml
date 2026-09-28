@@ -239,7 +239,7 @@ runs:
         path-field: path
         line-field: line
         token: ${{ inputs.token }}
-        review-body: ${{ inputs.post-summary == 'true' && steps.review.outputs.summary || '' }}
+        review-body: ${{ steps.review.outputs.summary }}
         fail-on-comments: "false"
 
     - name: Enforce fail level
