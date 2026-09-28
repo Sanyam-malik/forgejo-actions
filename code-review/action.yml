@@ -184,7 +184,7 @@ runs:
         fi
 
     - name: Build review items
-      id: build
+      id: review
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
