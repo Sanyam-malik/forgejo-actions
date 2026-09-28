@@ -65,11 +65,20 @@ inputs:
   skip-existing:
     description: >
       Only post findings that were not already commented on by an earlier
-      run. Each comment carries a hidden fingerprint of the finding (file,
-      tool, rule, message and the flagged line's text), so pushing new
-      commits adds only new or changed findings, and edits that merely
-      shift line numbers do not repost old ones. fail-level is still
-      evaluated against all current findings.
+      run, and auto-mark earlier comments whose finding is no longer
+      present. Each comment carries a hidden fingerprint of the finding
+      (file, tool, rule, message and the flagged line's text), so pushing
+      new commits adds only new or changed findings, and edits that merely
+      shift line numbers do not repost old ones.
+
+      When a fingerprint that had a comment no longer appears in the
+      current findings, that comment is edited to say "Fixed by <commit
+      sha>" -- Forgejo's REST API has no way to mark a review conversation
+      resolved, so this comment edit is the closest equivalent. If the
+      same issue reappears later, it gets a brand new comment.
+
+      fail-level is still evaluated against all current findings,
+      regardless of this setting.
     required: false
     default: "true"
 
@@ -86,12 +95,24 @@ inputs:
 
 outputs:
   item-count:
-    description: Number of findings turned into comments.
-    value: ${{ steps.review.outputs.item-count }}
+    description: Number of new/changed findings posted as comments.
+    value: ${{ steps.build.outputs.item-count }}
+
+  total-count:
+    description: Total findings in this run, including ones already commented on earlier.
+    value: ${{ steps.build.outputs.total-count }}
+
+  skipped-existing-count:
+    description: Findings not reposted because an earlier run already commented on them.
+    value: ${{ steps.build.outputs.skipped-existing-count }}
+
+  resolved-count:
+    description: Earlier comments edited to say "Fixed by <sha>" because their finding is gone.
+    value: ${{ steps.build.outputs.resolved-count }}
 
   should-fail:
-    description: '"true" if fail-level was met by the findings.'
-    value: ${{ steps.review.outputs.should-fail }}
+    description: '"true" if fail-level was met by the current findings.'
+    value: ${{ steps.build.outputs.should-fail }}
 
 runs:
   using: composite
@@ -184,7 +205,7 @@ runs:
         fi
 
     - name: Build review items
-      id: review
+      id: build
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -202,18 +223,14 @@ runs:
         TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
-
         python3 "${{ github.action_path }}/scripts/build-review-items.py"
 
     - name: Post PR comments
-      if: ${{ steps.review.outputs.item-count != '0' && steps.review.outputs.item-count != '' }}
+      if: ${{ steps.build.outputs.item-count != '0' && steps.build.outputs.item-count != '' }}
       uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
         message-template-file: ${{ github.action_path }}/templates/review-comment.md
-        review-body: |
-          **🤖Automated code review by MegaLinter and reviewdog.**
-          Posting {count} comment(s)
         path-field: path
         line-field: line
         token: ${{ inputs.token }}

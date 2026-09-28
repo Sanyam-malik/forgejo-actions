@@ -85,6 +85,14 @@ MESSAGE_PREFIX_RE = re.compile(
 # changed findings are posted.
 FINGERPRINT_RE = re.compile(r"<!--\s*lint-review:([0-9a-f]{8,40})\s*-->")
 
+# Second marker added when a finding's fingerprint disappears from a later
+# run (i.e. it looks fixed) and we've edited the comment to say so. Once a
+# comment carries this, we never touch it again, and its fingerprint no
+# longer counts as "already posted" -- so if the same issue comes back
+# later (e.g. a revert), it gets a fresh comment rather than staying
+# silently marked fixed.
+RESOLVED_RE = re.compile(r"<!--\s*lint-review-resolved:([0-9a-f]{8,40})\s*-->")
+
 RULE_CODE_PATTERNS = (
     re.compile(r"^(?P<code>[A-Z]{1,5}\d{2,5}(?:/[\w-]+)?)\b"),
     re.compile(r"[\[(](?:[A-Za-z]+/)?(?P<code>[A-Za-z0-9_.-]+)[\])]\s*$"),
@@ -566,10 +574,13 @@ def forgejo_get_paged(api_url, owner, repo, suffix, token, limit=50, max_pages=2
     return results
 
 
-def fetch_existing_fingerprints(api_url, owner, repo, pr_number, token):
-    """Fingerprints of lint comments already posted on this PR. Best effort:
-    on any failure we warn and treat it as 'nothing posted yet'."""
-    found = set()
+def fetch_existing_comments(api_url, owner, repo, pr_number, token):
+    """Earlier lint comments on this PR that carry our fingerprint marker.
+    Best effort: on any failure we warn and treat it as 'nothing posted
+    yet' -- we never fail the run just because we couldn't de-duplicate or
+    auto-resolve, since posting fresh (if duplicated) is far less harmful
+    than silently dropping findings."""
+    found = []
     try:
         reviews = forgejo_get_paged(api_url, owner, repo, f"/pulls/{pr_number}/reviews", token)
         for review in reviews:
@@ -584,10 +595,65 @@ def fetch_existing_fingerprints(api_url, owner, repo, pr_number, token):
                 token,
             )
             for comment in comments:
-                found.update(FINGERPRINT_RE.findall(str(comment.get("body") or "")))
+                comment_id = comment.get("id")
+                body = str(comment.get("body") or "")
+                fingerprints = FINGERPRINT_RE.findall(body)
+                if comment_id is None or not fingerprints:
+                    continue
+                found.append(
+                    {
+                        "id": comment_id,
+                        "body": body,
+                        # Exactly one fingerprint marker per comment, always
+                        # (we render it once, at post time).
+                        "fingerprint": fingerprints[0],
+                        "already_resolved": bool(RESOLVED_RE.search(body)),
+                    }
+                )
     except Exception as exc:
         print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
     return found
+
+
+def edit_pull_comment(api_url, owner, repo, comment_id, body, token):
+    url = f"{api_url.rstrip('/')}/repos/{owner}/{repo}/pulls/comments/{comment_id}"
+    req = request.Request(
+        url,
+        data=json.dumps({"body": body}).encode("utf-8"),
+        method="PATCH",
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+    )
+    with request.urlopen(req, timeout=60) as response:
+        return 200 <= response.status < 300
+
+
+def mark_fixed_comments(stale_comments, api_url, owner, repo, token, head_sha):
+    """Edit each comment whose finding is no longer present, so the thread
+    reads as resolved without relying on a native 'resolve conversation'
+    API -- Forgejo's REST API does not expose one (only a web-only route
+    behind session auth), so this comment edit is the actual mechanism."""
+    fixed_note = (
+        f"✅ **Fixed** by `{head_sha[:12]}` (no longer detected on the latest commit)."
+        if head_sha
+        else "✅ **Fixed** (no longer detected on the latest commit)."
+    )
+
+    resolved = 0
+    for comment in stale_comments:
+        new_body = f"{comment['body'].rstrip()}\n\n---\n{fixed_note}\n<!-- lint-review-resolved:{comment['fingerprint']} -->"
+        try:
+            if edit_pull_comment(api_url, owner, repo, comment["id"], new_body, token):
+                resolved += 1
+            else:
+                print(f"WARNING: could not mark comment {comment['id']} as fixed.")
+        except Exception as exc:
+            print(f"WARNING: could not mark comment {comment['id']} as fixed ({exc}).")
+
+    return resolved
 
 
 def read_source_line(path, line):
@@ -787,7 +853,7 @@ def main():
     owner = env("OWNER")
     repo = env("REPO")
     pr_number = env("PR_NUMBER")
-    head_sha = env("HEAD_SHA")  # noqa: F841 -- not needed here, kept for symmetry/logging
+    head_sha = env("HEAD_SHA")
     token = env("TOKEN")
 
     if filter_mode not in VALID_FILTERS:
@@ -829,9 +895,34 @@ def main():
     total_count = len(items)
 
     skipped_existing = 0
-    if skip_existing and items:
-        existing = fetch_existing_fingerprints(api_url, owner, repo, pr_number, token)
-        new_items = [i for i in items if i["fingerprint"] not in existing]
+    resolved_count = 0
+    if skip_existing:
+        current_fingerprints = {i["fingerprint"] for i in items}
+        existing_comments = fetch_existing_comments(api_url, owner, repo, pr_number, token)
+
+        # A finding whose fingerprint used to have a comment but is not in
+        # this run's results looks fixed -- mark it, but only once.
+        stale = [
+            c
+            for c in existing_comments
+            if not c["already_resolved"] and c["fingerprint"] not in current_fingerprints
+        ]
+        if stale:
+            print(f"{len(stale)} earlier finding(s) look fixed; marking their comments...")
+            resolved_count = mark_fixed_comments(stale, api_url, owner, repo, token, head_sha)
+            print(f"Marked {resolved_count} of {len(stale)} comment(s) as fixed.")
+
+        # Skip reposting only fingerprints that are both still open (not
+        # marked fixed) and still present in this run's findings. A
+        # fingerprint we just marked fixed is deliberately left out, so if
+        # the same issue reappears later it gets a brand new comment
+        # instead of silently staying marked fixed.
+        already_open = {
+            c["fingerprint"]
+            for c in existing_comments
+            if not c["already_resolved"] and c["fingerprint"] in current_fingerprints
+        }
+        new_items = [i for i in items if i["fingerprint"] not in already_open]
         skipped_existing = len(items) - len(new_items)
         if skipped_existing:
             print(f"Skipped {skipped_existing} finding(s) already commented on earlier.")
@@ -845,6 +936,7 @@ def main():
     write_output("item-count", str(len(items)))
     write_output("total-count", str(total_count))
     write_output("skipped-existing-count", str(skipped_existing))
+    write_output("resolved-count", str(resolved_count))
     write_output("should-fail", "true" if fail else "false")
 
     return 0
