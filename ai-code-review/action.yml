@@ -3,8 +3,9 @@ name: 'AI Code Review'
 description: >
   Reviews the files changed in a Forgejo/Gitea pull request with an LLM
   served from any OpenAI-compatible endpoint (Ollama, llama.cpp server,
-  vLLM, OpenAI, ...) and posts the findings as inline PR comments via the
-  generic Post PR Comments action. No linters involved.
+  vLLM, OpenAI, ...), writes findings as a JSON review envelope, and
+  delegates shared filtering, comment lifecycle, and posting to code-analyzer.
+  No linters involved.
 
 inputs:
   # ---- model endpoint -------------------------------------------------
@@ -176,11 +177,11 @@ inputs:
 outputs:
   item-count:
     description: Number of findings turned into comments.
-    value: ${{ steps.review.outputs.item-count }}
+    value: ${{ steps.analyzer.outputs.item-count }}
 
   should-fail:
     description: '"true" if fail-level was met by the findings.'
-    value: ${{ steps.review.outputs.should-fail }}
+    value: ${{ steps.analyzer.outputs.should-fail }}
 
 runs:
   using: composite
@@ -208,16 +209,12 @@ runs:
         SYSTEM_PROMPT_FILE: ${{ inputs.system-prompt-file }}
         INCLUDE: ${{ inputs.include }}
         EXCLUDE: ${{ inputs.exclude }}
-        LEVEL: ${{ inputs.level }}
         MIN_CONFIDENCE: ${{ inputs.min-confidence }}
-        MAX_COMMENTS: ${{ inputs.max-comments }}
-        SKIP_EXISTING: ${{ inputs.skip-existing }}
         MAX_FILES: ${{ inputs.max-files }}
         MAX_CHARS: ${{ inputs.max-chars }}
         MAX_REQUESTS: ${{ inputs.max-requests }}
         CONCURRENCY: ${{ inputs.concurrency }}
         BATCH_FILES: ${{ inputs.batch-files }}
-        FAIL_LEVEL: ${{ inputs.fail-level }}
         FAIL_ON_AI_ERROR: ${{ inputs.fail-on-ai-error }}
         ITEMS_OUTPUT: ${{ github.workspace }}/ai-review-items.json
         API_URL: ${{ github.api_url }}
@@ -230,21 +227,18 @@ runs:
 
         python3 "${{ github.action_path }}/scripts/ai-review.py"
 
-    - name: Post PR comments
-      if: ${{ steps.review.outputs.item-count != '0' && steps.review.outputs.item-count != '' }}
-      uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
+    - name: Analyze code review
+      id: analyzer
+      uses: ${{ github.action_repository }}/code-analyzer@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/ai-review-items.json
         message-template-file: ${{ github.action_path }}/templates/review-comment.md
+        level: ${{ inputs.level }}
+        skip-existing: ${{ inputs.skip-existing }}
+        max-comments: ${{ inputs.max-comments }}
+        fingerprint-mode: ai
+        fingerprint-prefix: ai-review
+        fail-level: ${{ inputs.fail-level }}
         path-field: path
         line-field: line
         token: ${{ inputs.token }}
-        review-body: ${{ steps.review.outputs.summary }}
-        fail-on-comments: "false"
-
-    - name: Enforce fail level
-      if: ${{ steps.review.outputs.should-fail == 'true' }}
-      shell: bash
-      run: |
-        echo "Fail level '${{ inputs.fail-level }}' was met by the AI review findings."
-        exit 1

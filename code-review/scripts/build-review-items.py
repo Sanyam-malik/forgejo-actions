@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Turns reviewdog RDJSON output into the flat JSON-items format expected by
-the generic "Post PR Comments" action, applying the same changed-files /
-diff-line / severity filtering the old all-in-one Forgejo poster used --
-minus AI suggestions and minus the posting itself, which now lives in the
-generic action.
+Turns reviewdog RDJSON output into the flat JSON-items format consumed by
+the shared code-analyzer action, applying code-review-specific changed-files
+and diff-line filtering while leaving common filtering and posting to the
+analyzer.
 
 Each output item is a flat dict with (at least) "path" and "line" plus
 everything a message template might want to reference: severity, tool,
@@ -13,12 +12,10 @@ rule_code, rule_url, message, and a few pre-rendered convenience fields
 template doesn't need conditional logic for optional pieces.
 """
 
-import hashlib
 import json
 import os
 import re
 import sys
-from pathlib import Path
 from urllib import error
 from urllib import request
 
@@ -31,25 +28,11 @@ VALID_FILTERS = {
     "nofilter",
 }
 
-VALID_FAIL_LEVELS = {
-    "none",
-    "any",
-    "info",
-    "warning",
-    "error",
-}
-
 CHANGED_FILE_STATUSES = {
     "added",
     "modified",
     "renamed",
     "deleted",
-}
-
-SEVERITY_RANK = {
-    "info": 1,
-    "warning": 2,
-    "error": 3,
 }
 
 LEVEL_EMOJI = {
@@ -80,19 +63,6 @@ MESSAGE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Hidden marker appended to every posted comment. On later runs (new pushes)
-# it lets us skip findings that were already commented on, so only new or
-# changed findings are posted.
-FINGERPRINT_RE = re.compile(r"<!--\s*lint-review:([0-9a-f]{8,40})\s*-->")
-
-# Second marker added when a finding's fingerprint disappears from a later
-# run (i.e. it looks fixed) and we've edited the comment to say so. Once a
-# comment carries this, we never touch it again, and its fingerprint no
-# longer counts as "already posted" -- so if the same issue comes back
-# later (e.g. a revert), it gets a fresh comment rather than staying
-# silently marked fixed.
-RESOLVED_RE = re.compile(r"<!--\s*lint-review-resolved:([0-9a-f]{8,40})\s*-->")
-
 RULE_CODE_PATTERNS = (
     re.compile(r"^(?P<code>[A-Z]{1,5}\d{2,5}(?:/[\w-]+)?)\b"),
     re.compile(r"[\[(](?:[A-Za-z]+/)?(?P<code>[A-Za-z0-9_.-]+)[\])]\s*$"),
@@ -109,26 +79,6 @@ def env(name, required=True, default=""):
     if required and not value.strip():
         die(f"Required input/env var {name} is empty.")
     return value
-
-
-def env_bool(name, default=False):
-    value = os.environ.get(name, "").strip().lower()
-    if value in {"true", "1", "yes"}:
-        return True
-    if value in {"false", "0", "no"}:
-        return False
-    return default
-
-
-def write_output(name, value):
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if not output_file:
-        return
-    try:
-        with open(output_file, "a", encoding="utf-8") as f:
-            f.write(f"{name}={value}\n")
-    except OSError as exc:
-        print(f"WARNING: could not write output '{name}': {exc}")
 
 
 def normalize_path(path):
@@ -468,23 +418,6 @@ def finding_matches_file(finding, changed_files):
     return None
 
 
-def filter_findings_by_level(findings, level):
-    level = str(level or "").strip().lower()
-    if level not in SEVERITY_RANK:
-        return findings
-
-    threshold = SEVERITY_RANK[level]
-    kept = []
-    for finding in findings:
-        severity = finding.get("_severity")
-        if severity is None:
-            kept.append(finding)
-            continue
-        if SEVERITY_RANK.get(str(severity).lower(), 0) >= threshold:
-            kept.append(finding)
-    return kept
-
-
 def filter_findings(findings, changed_files, filter_mode):
     if filter_mode == "nofilter":
         return findings
@@ -506,215 +439,6 @@ def filter_findings(findings, changed_files, filter_mode):
         filtered.append(finding)
 
     return filtered
-
-
-def deduplicate_findings(findings):
-    seen = set()
-    result = []
-    for finding in findings:
-        key = (
-            normalize_path(finding.get("path", "")),
-            finding.get("line"),
-            finding.get("column"),
-            finding.get("message"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(finding)
-    return result
-
-
-def should_fail(findings, fail_level):
-    if fail_level == "none" or not findings:
-        return False
-    if fail_level == "any":
-        return True
-
-    threshold = SEVERITY_RANK[fail_level]
-    for finding in findings:
-        severity = finding.get("_severity") or "info"
-        if SEVERITY_RANK.get(str(severity).lower(), 1) >= threshold:
-            return True
-    return False
-
-
-# ------------------------------------------------------------
-# Fingerprints: only post findings that were not commented on already
-# ------------------------------------------------------------
-
-def forgejo_get_paged(api_url, owner, repo, suffix, token, limit=50, max_pages=20):
-    results = []
-    previous = None
-    joiner = "&" if "?" in suffix else "?"
-
-    for page in range(1, max_pages + 1):
-        url = (
-            f"{api_url.rstrip('/')}/repos/{owner}/{repo}{suffix}"
-            f"{joiner}page={page}&limit={limit}"
-        )
-        req = request.Request(
-            url,
-            method="GET",
-            headers={"Authorization": f"token {token}", "Accept": "application/json"},
-        )
-        with request.urlopen(req, timeout=60) as response:
-            data = json.loads(response.read().decode("utf-8", errors="replace"))
-
-        if not isinstance(data, list) or not data or data == previous:
-            break
-
-        results.extend(data)
-
-        if len(data) < limit:
-            break
-
-        previous = data
-
-    return results
-
-
-def fetch_existing_comments(api_url, owner, repo, pr_number, token):
-    """Earlier lint comments on this PR that carry our fingerprint marker.
-    Best effort: on any failure we warn and treat it as 'nothing posted
-    yet' -- we never fail the run just because we couldn't de-duplicate or
-    auto-resolve, since posting fresh (if duplicated) is far less harmful
-    than silently dropping findings."""
-    found = []
-    try:
-        reviews = forgejo_get_paged(api_url, owner, repo, f"/pulls/{pr_number}/reviews", token)
-        for review in reviews:
-            review_id = review.get("id")
-            if review_id is None:
-                continue
-            comments = forgejo_get_paged(
-                api_url,
-                owner,
-                repo,
-                f"/pulls/{pr_number}/reviews/{review_id}/comments",
-                token,
-            )
-            for comment in comments:
-                comment_id = comment.get("id")
-                body = str(comment.get("body") or "")
-                fingerprints = FINGERPRINT_RE.findall(body)
-                if comment_id is None or not fingerprints:
-                    continue
-                found.append(
-                    {
-                        "id": comment_id,
-                        "body": body,
-                        # Exactly one fingerprint marker per comment, always
-                        # (we render it once, at post time).
-                        "fingerprint": fingerprints[0],
-                        "already_resolved": bool(RESOLVED_RE.search(body)),
-                    }
-                )
-    except Exception as exc:
-        print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
-    return found
-
-
-def edit_pull_comment(api_url, owner, repo, comment_id, body, token):
-    url = f"{api_url.rstrip('/')}/repos/{owner}/{repo}/issues/comments/{comment_id}"
-    req = request.Request(
-        url,
-        data=json.dumps({"body": body}).encode("utf-8"),
-        method="PATCH",
-        headers={
-            "Authorization": f"token {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    )
-    with request.urlopen(req, timeout=60) as response:
-        return 200 <= response.status < 300
-
-
-def mark_fixed_comments(stale_comments, api_url, owner, repo, token, head_sha):
-    """Edit each comment whose finding is no longer present, so the thread
-    reads as resolved without relying on a native 'resolve conversation'
-    API -- Forgejo's REST API does not expose one (only a web-only route
-    behind session auth), so this comment edit is the actual mechanism."""
-    fixed_note = (
-        f"✅ **Fixed** by `{head_sha[:12]}` (no longer detected on the latest commit)."
-        if head_sha
-        else "✅ **Fixed** (no longer detected on the latest commit)."
-    )
-
-    resolved = 0
-    for comment in stale_comments:
-        new_body = f"{comment['body'].rstrip()}\n\n---\n{fixed_note}\n<!-- lint-review-resolved:{comment['fingerprint']} -->"
-        try:
-            if edit_pull_comment(api_url, owner, repo, comment["id"], new_body, token):
-                resolved += 1
-            else:
-                print(f"WARNING: could not mark comment {comment['id']} as fixed.")
-        except Exception as exc:
-            print(f"WARNING: could not mark comment {comment['id']} as fixed ({exc}).")
-
-    return resolved
-
-
-def read_source_line(path, line):
-    """The text of path:line from the checked-out tree, or None."""
-    if not path or not isinstance(line, int) or line < 1:
-        return None
-
-    bases = [Path(".")]
-    workspace = os.environ.get("GITHUB_WORKSPACE", "").strip()
-    if workspace:
-        bases.append(Path(workspace))
-
-    for base in bases:
-        candidate = base / path
-        if not candidate.is_file():
-            continue
-        try:
-            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return None
-        return lines[line - 1] if line <= len(lines) else None
-
-    return None
-
-
-def collapse_whitespace(text):
-    return re.sub(r"\s+", " ", str(text or "")).strip()
-
-
-def assign_fingerprints(items):
-    """Give each item a stable fingerprint + hidden marker.
-
-    The fingerprint is built from what the finding *is* (file, tool, rule,
-    message and the text of the flagged line) rather than where it is, so
-    unrelated edits that only shift line numbers don't re-post old comments,
-    while a changed message or changed flagged line counts as a new finding.
-    Identical findings on identical lines get an occurrence index so they
-    stay distinct."""
-    seen = {}
-
-    for item in sorted(items, key=lambda i: (i["path"], i["line"])):
-        source_line = read_source_line(item["path"], item["line"])
-
-        parts = [
-            item["path"],
-            item["tool"],
-            item["rule_code"],
-            collapse_whitespace(item["message"]),
-            # Fall back to the line number if the source isn't available.
-            collapse_whitespace(source_line) if source_line is not None else f"line:{item['line']}",
-        ]
-
-        base = "|".join(parts)
-        occurrence = seen.get(base, 0)
-        seen[base] = occurrence + 1
-
-        fingerprint = hashlib.sha1(f"{base}|{occurrence}".encode("utf-8")).hexdigest()[:12]
-        item["fingerprint"] = fingerprint
-        item["fingerprint_marker"] = f"\n<!-- lint-review:{fingerprint} -->"
-
-    return items
 
 
 # ------------------------------------------------------------
@@ -844,22 +568,16 @@ def build_display_item(finding):
 def main():
     result_file = env("RESULT_FILE")
     filter_mode = env("FILTER_MODE", required=False, default="changed_files")
-    level = env("LEVEL", required=False, default="")
-    fail_level = env("FAIL_LEVEL", required=False, default="none")
     items_output = env("ITEMS_OUTPUT", required=False, default="review-items.json")
-    skip_existing = env_bool("SKIP_EXISTING", True)
 
     api_url = env("API_URL")
     owner = env("OWNER")
     repo = env("REPO")
     pr_number = env("PR_NUMBER")
-    head_sha = env("HEAD_SHA")
     token = env("TOKEN")
 
     if filter_mode not in VALID_FILTERS:
         die(f"Unsupported filter mode: {filter_mode}")
-    if fail_level not in VALID_FAIL_LEVELS:
-        die(f"Unsupported fail level: {fail_level}")
 
     print("Reading reviewdog findings...")
     findings = parse_findings(result_file)
@@ -871,11 +589,6 @@ def main():
     print(f"Changed files: {len(changed_files)}")
 
     filtered = filter_findings(findings, changed_files, filter_mode)
-    filtered = deduplicate_findings(filtered)
-
-    before_level_filter = len(filtered)
-    filtered = filter_findings_by_level(filtered, level)
-    print(f"Level filter '{level or 'none'}': {before_level_filter} -> {len(filtered)} findings")
 
     if filter_mode in {"added", "diff_context"} and filtered:
         print("Fetching pull-request diff for line-level filtering...")
@@ -887,57 +600,12 @@ def main():
 
     print(f"Findings after filtering: {len(filtered)}")
 
-    fail = should_fail(filtered, fail_level)
-    print(f"Fail level: {fail_level}")
-    print(f"Fail threshold matched: {'yes' if fail else 'no'}")
-
-    items = assign_fingerprints([build_display_item(f) for f in filtered])
-    total_count = len(items)
-
-    skipped_existing = 0
-    resolved_count = 0
-    if skip_existing:
-        current_fingerprints = {i["fingerprint"] for i in items}
-        existing_comments = fetch_existing_comments(api_url, owner, repo, pr_number, token)
-
-        # A finding whose fingerprint used to have a comment but is not in
-        # this run's results looks fixed -- mark it, but only once.
-        stale = [
-            c
-            for c in existing_comments
-            if not c["already_resolved"] and c["fingerprint"] not in current_fingerprints
-        ]
-        if stale:
-            print(f"{len(stale)} earlier finding(s) look fixed; marking their comments...")
-            resolved_count = mark_fixed_comments(stale, api_url, owner, repo, token, head_sha)
-            print(f"Marked {resolved_count} of {len(stale)} comment(s) as fixed.")
-
-        # Skip reposting only fingerprints that are both still open (not
-        # marked fixed) and still present in this run's findings. A
-        # fingerprint we just marked fixed is deliberately left out, so if
-        # the same issue reappears later it gets a brand new comment
-        # instead of silently staying marked fixed.
-        already_open = {
-            c["fingerprint"]
-            for c in existing_comments
-            if not c["already_resolved"] and c["fingerprint"] in current_fingerprints
-        }
-        new_items = [i for i in items if i["fingerprint"] not in already_open]
-        skipped_existing = len(items) - len(new_items)
-        if skipped_existing:
-            print(f"Skipped {skipped_existing} finding(s) already commented on earlier.")
-        items = new_items
+    items = [build_display_item(f) for f in filtered]
 
     with open(items_output, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
 
-    print(f"Wrote {len(items)} new item(s) to {items_output} ({total_count} current finding(s) in total).")
-
-    write_output("item-count", str(len(items)))
-    write_output("total-count", str(total_count))
-    write_output("skipped-existing-count", str(skipped_existing))
-    write_output("resolved-count", str(resolved_count))
-    write_output("should-fail", "true" if fail else "false")
+    print(f"Wrote {len(items)} finding(s) to {items_output}.")
 
     return 0
 

@@ -19,6 +19,13 @@
       "tags": ["validation", "lint", "shellcheck", "yaml"]
     },
     {
+      "id": "action-documentation",
+      "name": "Action Documentation",
+      "description": "Create and maintain action-level README documentation for composite actions",
+      "path": "action-documentation/SKILL.md",
+      "tags": ["documentation", "readme", "composite-action"]
+    },
+    {
       "id": "docker-ci",
       "name": "Docker CI Manager",
       "description": "Configure, build, export OCI tarballs, push Docker images, and perform container scans",

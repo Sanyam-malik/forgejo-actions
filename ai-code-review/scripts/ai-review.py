@@ -6,18 +6,16 @@ Fetches the PR diff, sends each changed file (chunked to fit the model's
 context) to any OpenAI-compatible /chat/completions endpoint (Ollama,
 llama.cpp server, vLLM, OpenAI, ...), validates the returned findings
 against the lines that are actually visible in the diff, and writes a JSON
-array of comment items for the generic "Post PR Comments" action.
+review envelope for the shared code-analyzer action.
 
 Stdlib only. No linters involved -- the model is the reviewer.
 """
 
 import concurrent.futures
 import fnmatch
-import hashlib
 import json
 import os
 import re
-import secrets
 import socket
 import sys
 import time
@@ -27,8 +25,6 @@ from urllib import request
 
 SEVERITY_RANK = {"info": 1, "warning": 2, "error": 3}
 SEVERITY_EMOJI = {"error": "🛑", "warning": "⚠️", "info": "💡"}
-VALID_FAIL_LEVELS = {"none", "any", "info", "warning", "error"}
-
 CATEGORY_LABELS = {
     "bug": "Bug",
     "security": "Security",
@@ -76,13 +72,6 @@ DEFAULT_EXCLUDES = (
     "node_modules/*,vendor/*,dist/*,build/*"
 )
 
-FINGERPRINT_RE = re.compile(r"<!--\s*ai-review:([0-9a-f]{8,40})\s*-->")
-# Second marker added when a finding's fingerprint disappears from a later
-# run (i.e. it looks fixed) and we've edited the comment to say so. See
-# mark_fixed_comments() -- Forgejo's REST API has no "resolve conversation"
-# endpoint (only an undocumented, session-authenticated web route), so
-# editing the comment body is the actual, stable mechanism.
-RESOLVED_RE = re.compile(r"<!--\s*ai-review-resolved:([0-9a-f]{8,40})\s*-->")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 MAX_LINE_CHARS = 400
 SNAP_DISTANCE = 3
@@ -130,22 +119,6 @@ def env_limit(name):
     return value if value > 0 else None
 
 
-def write_output(name, value):
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if not output_file:
-        return
-    value = str(value)
-    try:
-        with open(output_file, "a", encoding="utf-8") as f:
-            if "\n" in value:
-                delimiter = f"EOF_{secrets.token_hex(8)}"
-                f.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
-            else:
-                f.write(f"{name}={value}\n")
-    except OSError as exc:
-        print(f"WARNING: could not write output '{name}': {exc}")
-
-
 def split_patterns(raw):
     return [p.strip() for p in re.split(r"[,\n]", raw or "") if p.strip()]
 
@@ -177,37 +150,6 @@ def forgejo_get(ctx, suffix, accept="application/json", timeout=60):
         return response.read().decode("utf-8", errors="replace")
 
 
-def edit_pull_comment(api_url, owner, repo, comment_id, body, token):
-    url = f"{api_url.rstrip('/')}/repos/{owner}/{repo}/issues/comments/{comment_id}"
-    req = request.Request(
-        url,
-        data=json.dumps({"body": body}).encode("utf-8"),
-        method="PATCH",
-        headers={
-            "Authorization": f"token {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    )
-    with request.urlopen(req, timeout=60) as response:
-        return 200 <= response.status < 300
-
-
-def forgejo_get_paged(ctx, suffix, limit=50, max_pages=20):
-    results = []
-    previous = None
-    joiner = "&" if "?" in suffix else "?"
-    for page in range(1, max_pages + 1):
-        data = json.loads(forgejo_get(ctx, f"{suffix}{joiner}page={page}&limit={limit}"))
-        if not isinstance(data, list) or not data or data == previous:
-            break
-        results.extend(data)
-        if len(data) < limit:
-            break
-        previous = data
-    return results
-
-
 def fetch_pr_meta(ctx):
     try:
         data = json.loads(forgejo_get(ctx, f"/pulls/{ctx['pr_number']}"))
@@ -224,71 +166,6 @@ def fetch_diff(ctx):
         die(f"Could not fetch pull-request diff (HTTP {exc.code}).")
     except (error.URLError, TimeoutError):
         die("Could not fetch pull-request diff.")
-
-
-def fetch_existing_comments(ctx):
-    """Earlier AI comments on this PR that carry our fingerprint marker.
-    Best effort: on any failure we warn and treat it as 'nothing posted
-    yet' -- we never fail the run just to de-duplicate or auto-resolve,
-    since posting a duplicate comment is far less harmful than silently
-    dropping findings."""
-    found = []
-    try:
-        for review in forgejo_get_paged(ctx, f"/pulls/{ctx['pr_number']}/reviews"):
-            review_id = review.get("id")
-            if review_id is None:
-                continue
-            comments = forgejo_get_paged(
-                ctx, f"/pulls/{ctx['pr_number']}/reviews/{review_id}/comments"
-            )
-            for comment in comments:
-                comment_id = comment.get("id")
-                body = str(comment.get("body") or "")
-                fingerprints = FINGERPRINT_RE.findall(body)
-                if comment_id is None or not fingerprints:
-                    continue
-                found.append(
-                    {
-                        "id": comment_id,
-                        "body": body,
-                        # Exactly one fingerprint marker per comment, always
-                        # (we render it once, at post time).
-                        "fingerprint": fingerprints[0],
-                        "already_resolved": bool(RESOLVED_RE.search(body)),
-                    }
-                )
-    except Exception as exc:
-        print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
-    return found
-
-
-def mark_fixed_comments(ctx, stale_comments, head_sha):
-    """Edit each comment whose finding is no longer present, so the thread
-    reads as resolved without relying on a native 'resolve conversation'
-    API -- Forgejo's REST API does not expose one (only an undocumented,
-    session-authenticated web route), so this comment edit is the actual,
-    stable mechanism."""
-    fixed_note = (
-        f"✅ **Fixed** by `{head_sha[:12]}` (no longer detected on the latest commit)."
-        if head_sha
-        else "✅ **Fixed** (no longer detected on the latest commit)."
-    )
-
-    resolved = 0
-    for comment in stale_comments:
-        new_body = (
-            f"{comment['body'].rstrip()}\n\n---\n{fixed_note}"
-            f"\n<!-- ai-review-resolved:{comment['fingerprint']} -->"
-        )
-        try:
-            if edit_pull_comment(ctx['api_url'], ctx['owner'], ctx['repo'], comment['id'], new_body, ctx['token']):
-                resolved += 1
-            else:
-                print(f"WARNING: could not mark comment {comment['id']} as fixed.")
-        except Exception as exc:
-            print(f"WARNING: could not mark comment {comment['id']} as fixed ({exc}).")
-
-    return resolved
 
 
 # ------------------------------------------------------------
@@ -607,11 +484,6 @@ def make_item(raw, file_info, line_text, model):
         suggestion_block = f"**Suggested change**\n\n{fence}\n{suggestion}\n{fence}"
 
     normalized_line = re.sub(r"\s+", " ", line_text.get(line, "")).strip()
-    normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
-    fingerprint = hashlib.sha1(
-        f"{file_info['path']}|{category}|{normalized_title}|{normalized_line}".encode("utf-8")
-    ).hexdigest()[:12]
-
     label = CATEGORY_LABELS[category]
     return {
         "path": file_info["path"],
@@ -629,8 +501,7 @@ def make_item(raw, file_info, line_text, model):
             f"<sub>🤖 AI review · {model} · confidence {int(round(confidence * 100))}%"
             " · may be wrong, please verify</sub>"
         ),
-        "fingerprint": fingerprint,
-        "fingerprint_marker": f"\n<!-- ai-review:{fingerprint} -->",
+        "_fingerprint_line": normalized_line,
     }
 
 
@@ -771,34 +642,6 @@ def job_label(job):
 # main
 # ------------------------------------------------------------
 
-def should_fail(items, fail_level):
-    if fail_level == "none" or not items:
-        return False
-    if fail_level == "any":
-        return True
-    threshold = SEVERITY_RANK[fail_level]
-    return any(SEVERITY_RANK.get(i["severity"], 1) >= threshold for i in items)
-
-
-def build_summary(items, model, files_reviewed, notes):
-    counts = {sev: sum(1 for i in items if i["severity"] == sev) for sev in SEVERITY_RANK}
-    parts = [
-        f"{SEVERITY_EMOJI[sev]} {counts[sev]} {sev}"
-        for sev in ("error", "warning", "info")
-        if counts[sev]
-    ]
-    lines = [
-        f"🤖 **AI code review** · `{model}`",
-        "",
-        f"Reviewed {files_reviewed} changed file(s) and found {len(items)} "
-        f"issue(s){': ' + ' · '.join(parts) if parts else ''}.",
-    ]
-    for note in notes:
-        lines.append(f"- {note}")
-    lines += ["", "_AI-generated review; it can be wrong or miss context. Please verify before acting._"]
-    return "\n".join(lines)
-
-
 def main():
     base_url = env("AI_BASE_URL")
     model = env("AI_MODEL")
@@ -806,14 +649,6 @@ def main():
         die("Input ai-base-url is required.")
     if not model:
         die("Input ai-model is required.")
-
-    fail_level = env("FAIL_LEVEL", "none").lower()
-    if fail_level not in VALID_FAIL_LEVELS:
-        die(f"Unsupported fail level: {fail_level}")
-
-    level = env("LEVEL", "warning").lower()
-    if level not in SEVERITY_RANK:
-        die(f"Unsupported level: {level} (use info, warning, or error)")
 
     ctx = {
         "api_url": env("API_URL"),
@@ -828,11 +663,6 @@ def main():
             "Missing context: " + ", ".join(m.replace("_", "-") for m in missing)
             + ". This action must run on a pull_request-triggered job."
         )
-    # Only used for the "Fixed by <sha>" note on auto-resolved comments;
-    # its absence should never block the run, so it's not in ctx's
-    # required-context check above.
-    head_sha = env("HEAD_SHA")
-
     cfg = {
         "base_url": base_url,
         "api_key": env("AI_API_KEY"),
@@ -844,25 +674,17 @@ def main():
     }
 
     min_confidence = env_num("MIN_CONFIDENCE", 0.5, float)
-    max_comments = env_limit("MAX_COMMENTS")
     max_files = env_limit("MAX_FILES")
     max_requests = env_limit("MAX_REQUESTS")
     max_chars = max(2000, env_num("MAX_CHARS", 20000))
     concurrency = max(1, env_num("CONCURRENCY", 4))
     batch_files = env_bool("BATCH_FILES", True)
-    skip_existing = env_bool("SKIP_EXISTING", True)
     fail_on_ai_error = env_bool("FAIL_ON_AI_ERROR", False)
     items_output = env("ITEMS_OUTPUT", "ai-review-items.json")
 
     includes = split_patterns(env("INCLUDE"))
     raw_exclude = env("EXCLUDE")
     excludes = [] if raw_exclude.lower() == "none" else split_patterns(raw_exclude or DEFAULT_EXCLUDES)
-
-    # Look up earlier AI comments in the background while the model works.
-    background = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    existing_future = (
-        background.submit(fetch_existing_comments, ctx) if skip_existing else None
-    )
 
     # ---- diff -> reviewable files ----
     print(f"Fetching diff for PR #{ctx['pr_number']}...")
@@ -940,7 +762,7 @@ def main():
         print(f"::warning::AI code review: {failed} of {len(results)} request(s) failed; results may be incomplete.")
 
     # ---- validate / filter ----
-    items, seen = [], set()
+    items = []
     dropped_invalid = 0
     for job, raw_findings in results:
         for raw in raw_findings or []:
@@ -953,75 +775,28 @@ def main():
             if item is None:
                 dropped_invalid += 1
                 continue
-            if item["fingerprint"] in seen:
-                continue
-            seen.add(item["fingerprint"])
             items.append(item)
 
     print(f"Findings after validation: {len(items)} (dropped invalid/off-diff: {dropped_invalid})")
 
-    items = [i for i in items if SEVERITY_RANK[i["severity"]] >= SEVERITY_RANK[level]]
     items = [i for i in items if i["confidence"] >= min_confidence]
-    print(f"Findings after level '{level}' / confidence {min_confidence}: {len(items)}")
-
-    total_count = len(items)
-    # Evaluated on ALL current findings, not just the new ones, so a PR
-    # with an unresolved error keeps failing even though its comment
-    # already exists.
-    fail = should_fail(items, fail_level)
-    print(f"Fail level: {fail_level} -> {'FAIL' if fail else 'ok'}")
-
-    skipped_existing = 0
-    resolved_count = 0
-    if existing_future is not None:
-        current_fingerprints = {i["fingerprint"] for i in items}
-        existing_comments = existing_future.result()
-
-        # A finding whose fingerprint used to have a comment but is not in
-        # this run's results looks fixed -- mark it, but only once.
-        stale = [
-            c
-            for c in existing_comments
-            if not c["already_resolved"] and c["fingerprint"] not in current_fingerprints
-        ]
-        if stale:
-            print(f"{len(stale)} earlier finding(s) look fixed; marking their comments...")
-            resolved_count = mark_fixed_comments(ctx, stale, head_sha)
-            print(f"Marked {resolved_count} of {len(stale)} comment(s) as fixed.")
-
-        # Skip reposting only fingerprints that are both still open (not
-        # marked fixed) and still present in this run's findings. A
-        # fingerprint we just marked fixed is deliberately left out, so if
-        # the same issue reappears later it gets a brand new comment
-        # instead of silently staying marked fixed.
-        already_open = {
-            c["fingerprint"]
-            for c in existing_comments
-            if not c["already_resolved"] and c["fingerprint"] in current_fingerprints
-        }
-        before = len(items)
-        items = [i for i in items if i["fingerprint"] not in already_open]
-        skipped_existing = before - len(items)
-        if skipped_existing:
-            print(f"Skipped {skipped_existing} finding(s) already commented on earlier.")
-    background.shutdown(wait=False)
-
-    items.sort(key=lambda i: (-SEVERITY_RANK[i["severity"]], -i["confidence"], i["path"], i["line"]))
-    if max_comments and len(items) > max_comments:
-        notes.append(f"Showing the top {max_comments} of {len(items)} findings (max-comments).")
-        items = items[:max_comments]
+    print(f"Findings after confidence {min_confidence}: {len(items)}")
 
     with open(items_output, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    print(f"Wrote {len(items)} item(s) to {items_output} ({total_count} current finding(s) in total).")
-
-    write_output("item-count", len(items))
-    write_output("total-count", total_count)
-    write_output("skipped-existing-count", skipped_existing)
-    write_output("resolved-count", resolved_count)
-    write_output("should-fail", "true" if fail else "false")
-    write_output("requests-failed", failed)
-    write_output("summary", build_summary(items, cfg["model"], files_reviewed, notes))
+        json.dump(
+            {
+                "items": items,
+                "summary": {
+                    "model": cfg["model"],
+                    "files_reviewed": files_reviewed,
+                    "notes": notes,
+                },
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    print(f"Wrote {len(items)} finding(s) to {items_output}.")
 
     if failed and fail_on_ai_error:
         print("fail-on-ai-error is set and at least one AI request failed.")

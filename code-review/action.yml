@@ -2,8 +2,8 @@ name: 'Multi-language Code Review'
 
 description: >
   Detects programming languages in a repository, runs open-source linters
-  through reviewdog, and posts findings as inline comments on Forgejo pull
-  requests via the generic Post PR Comments action.
+  through reviewdog, writes normalized review items as JSON, and delegates
+  shared filtering, comment lifecycle, and posting to code-analyzer.
 
 inputs:
   token:
@@ -42,9 +42,9 @@ inputs:
     description: >
       Minimum severity posted as PR comments: info, warning, or error.
       Findings below this severity are parsed but dropped before
-      building comments. (This is enforced when building the items
-      file, not by reviewdog's own -level flag, which does not filter
-      output for the rdjson reporter used here.)
+      posting comments. (This is enforced by code-analyzer, not by
+      reviewdog's own -level flag, which does not filter output for the
+      rdjson reporter used here.)
     required: false
     default: "error"
 
@@ -96,23 +96,23 @@ inputs:
 outputs:
   item-count:
     description: Number of new/changed findings posted as comments.
-    value: ${{ steps.build.outputs.item-count }}
+    value: ${{ steps.analyzer.outputs.item-count }}
 
   total-count:
     description: Total findings in this run, including ones already commented on earlier.
-    value: ${{ steps.build.outputs.total-count }}
+    value: ${{ steps.analyzer.outputs.total-count }}
 
   skipped-existing-count:
     description: Findings not reposted because an earlier run already commented on them.
-    value: ${{ steps.build.outputs.skipped-existing-count }}
+    value: ${{ steps.analyzer.outputs.skipped-existing-count }}
 
   resolved-count:
     description: Earlier comments edited to say "Fixed by <sha>" because their finding is gone.
-    value: ${{ steps.build.outputs.resolved-count }}
+    value: ${{ steps.analyzer.outputs.resolved-count }}
 
   should-fail:
     description: '"true" if fail-level was met by the current findings.'
-    value: ${{ steps.build.outputs.should-fail }}
+    value: ${{ steps.analyzer.outputs.should-fail }}
 
 runs:
   using: composite
@@ -211,9 +211,6 @@ runs:
       env:
         RESULT_FILE: reviewdog-results.txt
         FILTER_MODE: ${{ inputs.filter-mode }}
-        LEVEL: ${{ inputs.level }}
-        FAIL_LEVEL: ${{ inputs.fail-level }}
-        SKIP_EXISTING: ${{ inputs.skip-existing }}
         ITEMS_OUTPUT: ${{ github.workspace }}/review-items.json
         API_URL: ${{ github.api_url }}
         OWNER: ${{ github.repository_owner }}
@@ -225,23 +222,20 @@ runs:
         set -euo pipefail
         python3 "${{ github.action_path }}/scripts/build-review-items.py"
 
-    - name: Post PR comments
-      if: ${{ steps.build.outputs.item-count != '0' && steps.build.outputs.item-count != '' }}
-      uses: ${{ github.action_repository }}/post-file-comment@${{ github.action_ref }}
+    - name: Analyze code review
+      id: analyzer
+      uses: ${{ github.action_repository }}/code-analyzer@${{ github.action_ref }}
       with:
         items-file: ${{ github.workspace }}/review-items.json
         message-template-file: ${{ github.action_path }}/templates/review-comment.md
+        level: ${{ inputs.level }}
+        skip-existing: ${{ inputs.skip-existing }}
+        fingerprint-mode: lint
+        fingerprint-prefix: lint-review
+        fail-level: ${{ inputs.fail-level }}
         review-body: |
           **🤖Automated code review by MegaLinter and reviewdog.**
           Posting {count} comment(s)
         path-field: path
         line-field: line
         token: ${{ inputs.token }}
-        fail-on-comments: "false"
-
-    - name: Enforce fail level
-      if: ${{ steps.review.outputs.should-fail == 'true' }}
-      shell: bash
-      run: |
-        echo "Fail level '${{ inputs.fail-level }}' was met by the AI review findings."
-        exit 1

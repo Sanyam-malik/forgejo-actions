@@ -7,6 +7,7 @@ These actions simplify common CI tasks such as:
 * ⚙️ Language runtime setup with mirror support
 * 🐳 Docker build, multi-platform build, OCI export, and push
 * 🛡️ Security & vulnerability scanning (Gitleaks + Trivy)
+* 🔎 Pull-request code review with linters or OpenAI-compatible AI models
 * 🌐 Static site building & deployment
 * 📦 Package publishing (Maven & Gradle)
 * 🧰 Git operations & package cache integrations
@@ -268,7 +269,75 @@ Publish Java packages using Maven or Gradle scripts.
 
 ---
 
+## 🔎 Code Review Actions
+
+### `code-review`
+
+Run MegaLinter and reviewdog against changed pull-request files. This action
+produces review items as JSON, then delegates shared severity filtering,
+fingerprint de-duplication, existing-comment handling, auto-resolution,
+comment posting, and fail-level enforcement to `code-analyzer`.
+
+```yaml
+- uses: actions/forgejo/code-review@v1
+  with:
+    level: error
+    filter-mode: changed_files
+    skip-existing: true
+    fail-level: warning
+    token: ${{ github.token }}
+```
+
+### `ai-code-review`
+
+Review changed pull-request files with an OpenAI-compatible endpoint such as
+Ollama, llama.cpp, vLLM, or OpenAI. The action writes an AI review envelope
+containing findings and review metadata; `code-analyzer` handles the shared
+lifecycle and posts inline comments.
+
+```yaml
+- uses: actions/forgejo/ai-code-review@v1
+  with:
+    ai-base-url: https://api.openai.com/v1
+    ai-model: gpt-4o
+    ai-api-key: ${{ secrets.OPENAI_API_KEY }}
+    level: warning
+    skip-existing: true
+    max-comments: 0
+    fail-level: none
+    token: ${{ github.token }}
+```
+
+Both producer actions must run in a pull-request workflow and require a token
+with permission to read pull-request files and review comments. Use
+`code-analyzer` directly when another review tool already produces a JSON
+array or an object containing an `items` array.
+
 ## 🛡️ Security & Scanning Actions
+
+### `code-analyzer`
+
+Apply shared filtering and fingerprint deduplication to review findings,
+auto-mark stale comments as fixed, post inline pull-request comments through
+`post-file-comment`, and enforce the configured fail level. It accepts a JSON
+array or producer envelope and is used by `code-review` and `ai-code-review`.
+
+The producer JSON items must include `path`, `line`, `message`, and
+`severity`. Optional fields such as `tool`, `rule_code`, `title`, `category`,
+`confidence`, and pre-rendered template fields are preserved for
+`message-template-file`. An envelope may also include `summary` metadata.
+
+```yaml
+- uses: actions/forgejo/code-analyzer@v1
+  with:
+    items-file: review-items.json
+    message-template-file: templates/review-comment.md
+    level: warning
+    fingerprint-mode: lint
+    fingerprint-prefix: lint-review
+    fail-level: warning
+    token: ${{ github.token }}
+```
 
 ### `security-scan`
 
@@ -373,6 +442,7 @@ This repository includes vendor-neutral **AI Agent Operating Guidelines** (`AGEN
 Available skills in `.agents/skills/` and `skills/`:
 * `action-creator`: Scaffold and create new composite actions adhering to repository standards.
 * `action-validator`: Lint YAML syntax, verify `shell: bash` parameters, and validate shell safety.
+* `action-documentation`: Create and maintain action-level README files synchronized with `action.yml`.
 * `docker-ci`: Automate Docker builds, multi-platform targets, and Trivy scans.
 * `runtime-setup`: Manage runtime installer actions and `pkg-cache` configurations.
 * `release-manager`: Automate `v1` major version tag updates.
@@ -385,27 +455,37 @@ Available skills in `.agents/skills/` and `skills/`:
 actions/
  ├ build-angular
  ├ build-hugo
+ ├ ai-code-review
+ ├ code-analyzer
+ ├ code-review
  ├ condition-check
  ├ container-scan
-├ deploy-pages
-├ docker-build
-├ docker-login
-├ docker-multi-build
-├ docker-push
-├ docker-sync
-├ git-clone
-├ link-docker-image
-├ publish-maven
-├ repository-sync
+ ├ deploy-pages
+ ├ docker-build
+ ├ docker-login
+ ├ docker-multi-build
+ ├ docker-push
+ ├ docker-sync
+ ├ git-clone
+ ├ inactive-lock
+ ├ link-docker-image
+ ├ post-comment
+ ├ post-file-comment
+ ├ publish-maven
+ ├ repository-sync
+ ├ run-secrets-scan
+ ├ run-vulnerability-scan
  ├ security-scan
  ├ setup-cache
  ├ setup-docker
+ ├ setup-gitleaks
  ├ setup-go
  ├ setup-gradle
  ├ setup-hugo
  ├ setup-java
  ├ setup-maven
  ├ setup-node
+ ├ setup-python
  ├ setup-trivy
  └ utils
       ├ detect-pkg-cache

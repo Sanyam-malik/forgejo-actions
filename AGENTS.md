@@ -13,8 +13,10 @@ This repository contains reusable **composite actions** designed for **Forgejo, 
 forgejo-actions/
 ├── build-angular/            # Angular build composite action
 ├── build-hugo/               # Hugo site build action
+├── ai-code-review/            # AI review-item producer
+├── code-analyzer/             # Common review-item posting and enforcement action
+├── code-review/               # Linter/reviewdog review-item producer
 ├── condition-check/          # Value regex pattern matching action
-├── repository-sync/          # Branch/dir sync utility action
 ├── container-scan/           # Container image scanning action
 ├── deploy-pages/             # Git pages deployment action
 ├── docker-build/             # Docker single-platform build & OCI export
@@ -23,16 +25,24 @@ forgejo-actions/
 ├── docker-push/              # Docker image push action
 ├── docker-sync/              # Registry-to-registry image sync action
 ├── git-clone/                # Git clone utility action
+├── inactive-lock/             # Lock inactive pull requests
 ├── link-docker-image/        # Package registry image linker
+├── post-comment/              # Post pull-request comments
+├── post-file-comment/         # Post inline comments from JSON items
 ├── publish-maven/            # Maven/Gradle package publisher
+├── repository-sync/           # Branch/dir sync utility action
+├── run-secrets-scan/          # Run secret scanning
+├── run-vulnerability-scan/    # Run vulnerability scanning
 ├── security-scan/            # Secrets & dependency scanner (Gitleaks + Trivy)
 ├── setup-cache/              # System APT / package cache installer
 ├── setup-docker/             # Docker engine & Buildx installer
+├── setup-gitleaks/            # Gitleaks installer
 ├── setup-go/                 # Go runtime installer
 ├── setup-gradle/             # Gradle installer with mirror support
 ├── setup-hugo/               # Hugo Extended installer
 ├── setup-java/               # OpenJDK installer
 ├── setup-node/               # Node.js installer with pkg-cache mirror
+├── setup-python/              # Python runtime installer
 ├── setup-trivy/              # Trivy security tool installer
 ├── utils/                    # Common helper composite actions
 │   ├── detect-pkg-cache/     # Auto-detect pkg-cache hostname
@@ -104,6 +114,7 @@ This repository provides vendor-neutral agent skills stored under `.agents/skill
 | :--- | :--- | :--- |
 | `action-creator` | Scaffold and create a new composite CI action | `.agents/skills/action-creator/SKILL.md` |
 | `action-validator` | Lint, validate syntax, and check bash safety of `action.yml` files | `.agents/skills/action-validator/SKILL.md` |
+| `action-documentation` | Create and maintain action-level README files | `.agents/skills/action-documentation/SKILL.md` |
 | `docker-ci` | Configure, build, export, and push Docker OCI images | `.agents/skills/docker-ci/SKILL.md` |
 | `runtime-setup` | Implement language runtime setup actions with `pkg-cache` support | `.agents/skills/runtime-setup/SKILL.md` |
 | `release-manager` | Manage release tags (`v1`) and workflow dispatch events | `.agents/skills/release-manager/SKILL.md` |
