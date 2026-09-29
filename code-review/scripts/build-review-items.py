@@ -616,7 +616,7 @@ def fetch_existing_comments(api_url, owner, repo, pr_number, token):
 
 
 def edit_pull_comment(api_url, owner, repo, comment_id, body, token):
-    url = f"{api_url.rstrip('/')}/repos/{owner}/{repo}/pulls/comments/{comment_id}"
+    url = f"{api_url.rstrip('/')}/repos/{owner}/{repo}/issues/comments/{comment_id}"
     req = request.Request(
         url,
         data=json.dumps({"body": body}).encode("utf-8"),
