@@ -135,6 +135,33 @@ def fetch_existing_comments(ctx, prefix):
     marker_re = re.compile(FINGERPRINT_RE_TEMPLATE.format(prefix=re.escape(prefix)))
     resolved_re = re.compile(RESOLVED_RE_TEMPLATE.format(prefix=re.escape(prefix)))
     found = []
+    seen_ids = set()
+
+    def process_comments(comments):
+        for comment in comments:
+            comment_id = comment.get("id")
+            if comment_id is None or comment_id in seen_ids:
+                continue
+            body = str(comment.get("body") or "")
+            fingerprints = marker_re.findall(body)
+            if not fingerprints:
+                continue
+            seen_ids.add(comment_id)
+            found.append(
+                {
+                    "id": comment_id,
+                    "body": body,
+                    "fingerprint": fingerprints[0],
+                    "already_resolved": bool(resolved_re.search(body)),
+                }
+            )
+
+    try:
+        comments = forgejo_get_paged(ctx, f"/pulls/{ctx['pr_number']}/comments")
+        process_comments(comments)
+    except Exception:
+        pass
+
     try:
         reviews = forgejo_get_paged(ctx, f"/pulls/{ctx['pr_number']}/reviews")
         for review in reviews:
@@ -144,42 +171,37 @@ def fetch_existing_comments(ctx, prefix):
             comments = forgejo_get_paged(
                 ctx, f"/pulls/{ctx['pr_number']}/reviews/{review_id}/comments"
             )
-            for comment in comments:
-                comment_id = comment.get("id")
-                body = str(comment.get("body") or "")
-                fingerprints = marker_re.findall(body)
-                if comment_id is None or not fingerprints:
-                    continue
-                found.append(
-                    {
-                        "id": comment_id,
-                        "body": body,
-                        "fingerprint": fingerprints[0],
-                        "already_resolved": bool(resolved_re.search(body)),
-                    }
-                )
+            process_comments(comments)
     except Exception as exc:
-        print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
+        if not found:
+            print(f"WARNING: could not load existing review comments ({exc}); not de-duplicating.")
     return found
 
 
 def edit_pull_comment(ctx, comment_id, body):
-    url = (
-        f"{ctx['api_url'].rstrip('/')}/repos/{ctx['owner']}/{ctx['repo']}"
-        f"/issues/comments/{comment_id}"
-    )
-    req = request.Request(
-        url,
-        data=json.dumps({"body": body}).encode("utf-8"),
-        method="PATCH",
-        headers={
-            "Authorization": f"token {ctx['token']}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    )
-    with request.urlopen(req, timeout=60) as response:
-        return 200 <= response.status < 300
+    endpoints = [
+        f"/pulls/comments/{comment_id}",
+        f"/issues/comments/{comment_id}",
+    ]
+    for endpoint in endpoints:
+        url = f"{ctx['api_url'].rstrip('/')}/repos/{ctx['owner']}/{ctx['repo']}{endpoint}"
+        req = request.Request(
+            url,
+            data=json.dumps({"body": body}).encode("utf-8"),
+            method="PATCH",
+            headers={
+                "Authorization": f"token {ctx['token']}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=60) as response:
+                if 200 <= response.status < 300:
+                    return True
+        except Exception:
+            continue
+    return False
 
 
 def mark_fixed_comments(ctx, comments, prefix):
@@ -190,18 +212,23 @@ def mark_fixed_comments(ctx, comments, prefix):
         else "✅ **Fixed** (no longer detected on the latest commit)."
     )
     resolved = 0
+    seen_ids = set()
     for comment in comments:
+        comment_id = comment["id"]
+        if comment_id in seen_ids:
+            continue
+        seen_ids.add(comment_id)
         body = (
             f"{comment['body'].rstrip()}\n\n---\n{fixed_note}"
             f"\n<!-- {prefix}-resolved:{comment['fingerprint']} -->"
         )
         try:
-            if edit_pull_comment(ctx, comment["id"], body):
+            if edit_pull_comment(ctx, comment_id, body):
                 resolved += 1
             else:
-                print(f"WARNING: could not mark comment {comment['id']} as fixed.")
+                print(f"WARNING: could not mark comment {comment_id} as fixed.")
         except Exception as exc:
-            print(f"WARNING: could not mark comment {comment['id']} as fixed ({exc}).")
+            print(f"WARNING: could not mark comment {comment_id} as fixed ({exc}).")
     return resolved
 
 
@@ -254,28 +281,13 @@ def assign_fingerprints(items, mode, prefix):
         seen_items.add(key)
         unique.append(item)
 
-    indexed = list(enumerate(unique))
-    indexed.sort(key=lambda pair: (normalize_path(pair[1].get("path")), pair[1].get("line", 0)))
-    occurrences = {}
-    fingerprints = {}
-    for index, item in indexed:
+    for item in unique:
         base = fingerprint_base(item, mode)
-        occurrence = occurrences.get(base, 0)
-        occurrences[base] = occurrence + 1
-        suffix = f"|{occurrence}" if mode == "lint" else ""
-        fingerprints[index] = hashlib.sha1(f"{base}{suffix}".encode("utf-8")).hexdigest()[:12]
-
-    result = []
-    seen = set()
-    for index, item in enumerate(unique):
-        fingerprint = fingerprints[index]
-        if fingerprint in seen:
-            continue
-        seen.add(fingerprint)
+        fingerprint = hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
         item["fingerprint"] = fingerprint
         item["fingerprint_marker"] = f"\n<!-- {prefix}:{fingerprint} -->"
-        result.append(item)
-    return result
+
+    return unique
 
 
 def filter_by_level(items, level):
