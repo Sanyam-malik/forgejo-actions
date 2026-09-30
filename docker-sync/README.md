@@ -35,6 +35,7 @@ steps:
 
 ## Behavior and requirements
 
+- The crane release API lookup and archive download use the inherited `PKG_CACHE` mirror when it is set; Forgejo APIs and user-provided target registries remain direct. Run `setup-cache` once to derive and export `PKG_CACHE`, or set it explicitly as a job environment override.
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Required inputs must be supplied; they have no declared defaults.
 - Docker operations require a runner with Docker and the permissions needed to build, load, log in, or push images as applicable.

@@ -1,10 +1,14 @@
-name: Get Latest Tag
-description: Fetch the latest Git tag from a GitHub, GitLab, Gitea, Forgejo, or OneDev repository
+name: Get Tag
+description: Fetch a specified tag, or the latest tag by default, from a GitHub, GitLab, Gitea, Forgejo, or OneDev repository
 
 inputs:
   repo_url:
     description: Repository clone URL
     required: true
+  version:
+    description: Tag to fetch, or latest
+    required: false
+    default: latest
   token:
     description: Optional token for private repositories
     required: false
@@ -13,27 +17,23 @@ inputs:
     description: Optional provider override (github, gitlab, gitea, forgejo, or onedev)
     required: false
     default: ""
-  api_url:
-    description: Optional API base URL override for provider-compatible callers (git resolution does not require it)
-    required: false
-    default: ""
 
 outputs:
   tag:
-    description: Latest git tag
+    description: Selected tag
     value: ${{ steps.get_tag.outputs.tag }}
 
 runs:
   using: composite
   steps:
     - id: get_tag
-      name: Resolve latest tag
+      name: Resolve tag
       shell: bash
       env:
         REPO_URL_INPUT: ${{ inputs.repo_url }}
+        VERSION_INPUT: ${{ inputs.version }}
         TOKEN_INPUT: ${{ inputs.token }}
         PROVIDER_INPUT: ${{ inputs.provider }}
-        API_URL_INPUT: ${{ inputs.api_url }}
       run: |
         set -euo pipefail
-        bash "${{ github.action_path }}/scripts/get-latest-tag.sh"
+        bash "${{ github.action_path }}/scripts/get-tag.sh"

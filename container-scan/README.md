@@ -24,7 +24,6 @@ steps:
 | `ignore_unfixed` | Ignore vulnerabilities with no available fix | No | `false` |
 | `output_dir` | Directory to write the JSON and table reports into | No | `trivy-results` |
 | `trivy_version` | Trivy version to install if trivy is not already on PATH | No | `latest` |
-| `pkg_cache` | Package cache host or base URL to install Trivy through, if an install is needed | No | `""` |
 | `fail_build` | Fail this action when matching vulnerabilities are found or the scan errors out. | No | `true` |
 | `post_pr_comment` | Post (or update) a pull request comment summarizing the scan results. | No | `true` |
 
@@ -39,8 +38,9 @@ steps:
 
 ## Behavior and requirements
 
+- Reads the inherited `PKG_CACHE` environment variable for mirror access when it is set; otherwise uses official sources. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
+
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Required inputs must be supplied; they have no declared defaults.
-- `pkg_cache` is optional; leave it empty to use the action's default package or download source, or set it to a compatible mirror.
 - Pull-request operations require the relevant event context and a token with sufficient repository permissions.
 - To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.

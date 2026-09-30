@@ -20,12 +20,16 @@ are delegated to [`code-analyzer`](../code-analyzer/).
 Run this action in a `pull_request` workflow. The token must be able to read
 pull-request files and review comments.
 
+If `PKG_CACHE` is set in the job environment, the reviewdog installer uses it
+as a mirror; otherwise it downloads from the official source. Use
+`setup-cache` once near the start of the job to configure and export this
+environment variable automatically.
+
 ## Inputs
 
 | Input | Default | Description |
 | --- | --- | --- |
 | `token` | `${{ github.token }}` | Token used for pull-request API access and comments. |
-| `pkg_cache` | `""` | Optional package cache host or base URL for reviewdog. |
 | `languages` | `""` | Comma-separated languages to force MegaLinter to run. |
 | `exclude-languages` | `""` | Comma-separated languages to skip. |
 | `exclude-tools` | `""` | Comma-separated linters to skip. |

@@ -1,10 +1,14 @@
-name: Get Latest Release Assets
-description: Fetch the latest release tag and assets from GitHub, GitLab, Gitea, Forgejo, or OneDev
+name: Get Release
+description: Fetch a selected release tag and assets, or the latest release by default, across common Git hosting providers
 
 inputs:
   repo:
     description: Repository URL
     required: true
+  version:
+    description: Release/tag version to fetch, or latest
+    required: false
+    default: latest
   api_url:
     description: Optional API base URL override
     required: false
@@ -20,7 +24,7 @@ inputs:
 
 outputs:
   tag:
-    description: Latest release tag, or latest git tag when no release API is available
+    description: Selected release tag
     value: ${{ steps.release.outputs.tag }}
   assets:
     description: JSON array of release assets with name, size, and URL
@@ -30,10 +34,12 @@ runs:
   using: composite
   steps:
     - id: release
-      name: Resolve latest release
+      name: Resolve release
       shell: bash
       env:
+        REPO_INPUT: ${{ inputs.repo }}
         REPO_URL_INPUT: ${{ inputs.repo }}
+        VERSION_INPUT: ${{ inputs.version }}
         API_URL_INPUT: ${{ inputs.api_url }}
         PROVIDER_INPUT: ${{ inputs.provider }}
         TOKEN_INPUT: ${{ inputs.token }}

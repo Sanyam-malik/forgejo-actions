@@ -1,5 +1,5 @@
 name: Detect Package Cache
-description: Detect package cache hostname from server URL
+description: Detect package cache hostname from server URL (compatibility utility)
 
 inputs:
   server_url:
@@ -17,13 +17,21 @@ runs:
   steps:
     - id: detect
       shell: bash
+      env:
+        SERVER_URL: ${{ inputs.server_url }}
       run: |
-        DOMAIN="${{ inputs.server_url }}"
-        DOMAIN=${DOMAIN#https://}
-        DOMAIN=${DOMAIN#http://}
-        DOMAIN=${DOMAIN%%:*}
+        set -euo pipefail
 
-        ROOT_DOMAIN=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+        DOMAIN="${SERVER_URL#https://}"
+        DOMAIN="${DOMAIN#http://}"
+        DOMAIN="${DOMAIN%%/*}"
+        DOMAIN="${DOMAIN%%:*}"
+
+        if [[ "$DOMAIN" == *.* ]]; then
+          ROOT_DOMAIN="$(printf '%s\n' "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')"
+        else
+          ROOT_DOMAIN="$DOMAIN"
+        fi
         PKG_CACHE="pkg-cache.${ROOT_DOMAIN}"
 
         echo "pkg_cache=$PKG_CACHE" >> "$GITHUB_OUTPUT"

@@ -1,6 +1,6 @@
 # Setup Node
 
-Install Node.js with optional pkg-cache mirror
+Install Node.js with inherited PKG_CACHE mirror support
 
 ## Usage
 
@@ -16,9 +16,9 @@ steps:
 | Name | Description | Required | Default |
 | --- | --- | :---: | --- |
 | `node_version` | Node.js major version (e.g. 20, 21) | No | `20` |
-| `pkg_cache` | pkg-cache host or base URL | No | `""` |
 
 ## Behavior and requirements
 
+- Reads the inherited `PKG_CACHE` environment variable for mirror access when it is set; otherwise uses official sources. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
+
 - Runs as a vendor-neutral composite action on the current CI runner.
-- `pkg_cache` is optional; leave it empty to use the action's default package or download source, or set it to a compatible mirror.

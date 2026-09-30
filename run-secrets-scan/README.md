@@ -19,7 +19,6 @@ steps:
 | `report_path` | Path to write the Gitleaks JSON report to. Defaults to a file under the runner's temp directory. | No | `""` |
 | `gitleaks_version` | Gitleaks version to install if gitleaks is not already on PATH. | No | `latest` |
 | `gitleaks_install_dir` | Directory to install the Gitleaks binary into, if an install is needed. Must be on PATH, or added to PATH by the install. | No | `/usr/local/bin` |
-| `pkg_cache` | Package cache host or base URL to install Gitleaks through, if an install is needed. | No | `""` |
 | `fail_build` | If "true", this action fails itself (exit 1) when secret_count is greater than zero, or when the scan errors out. If "false" (default), the action only reports - the caller decides whether to fail the build based on the outputs. | No | `false` |
 
 ## Outputs
@@ -33,6 +32,7 @@ steps:
 
 ## Behavior and requirements
 
+- Reads the inherited `PKG_CACHE` environment variable for mirror access when it is set; otherwise uses official sources. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
+
 - Runs as a vendor-neutral composite action on the current CI runner.
-- `pkg_cache` is optional; leave it empty to use the action's default package or download source, or set it to a compatible mirror.
 - To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.

@@ -19,5 +19,6 @@ steps:
 
 ## Behavior and requirements
 
+- When the inherited `PKG_CACHE` environment variable is set, the Docker convenience installer is fetched through the mirror; otherwise the official installer is used. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Docker operations require a runner with Docker and the permissions needed to build, load, log in, or push images as applicable.

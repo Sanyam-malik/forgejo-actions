@@ -39,3 +39,7 @@ Use this skill when a composite action needs an action-local `README.md`.
 - Remove claims that the action no longer performs after a refactor.
 - Use fenced YAML/JSON examples that are copyable.
 - Run YAML validation after changing action metadata.
+- For provider-aware tag/release actions, document URL-derived provider
+  identity, optional `provider`/`api_url` overrides, `version: latest`
+  delegation, GitLab path encoding, and tag fallback when release APIs are
+  unavailable.

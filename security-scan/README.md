@@ -17,7 +17,6 @@ steps:
 | --- | --- | :---: | --- |
 | `trivy_version` | Trivy version to install. Defaults to the latest release. | No | `latest` |
 | `trivy_install_dir` | Directory to install the Trivy binary into. | No | `/usr/local/bin` |
-| `pkg_cache` | Package cache host or base URL to mirror GitHub releases through. | No | `""` |
 | `gitleaks_version` | Gitleaks version to install. Defaults to the latest release. | No | `latest` |
 | `gitleaks_install_dir` | Directory to install the Gitleaks binary into. | No | `/usr/local/bin` |
 | `scan_path` | Path to scan. | No | `.` |
@@ -36,7 +35,8 @@ steps:
 
 ## Behavior and requirements
 
+- Reads the inherited `PKG_CACHE` environment variable for mirror access when it is set; otherwise uses official sources. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
+
 - Runs as a vendor-neutral composite action on the current CI runner.
-- `pkg_cache` is optional; leave it empty to use the action's default package or download source, or set it to a compatible mirror.
 - Pull-request operations require the relevant event context and a token with sufficient repository permissions.
 - To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.

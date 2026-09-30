@@ -26,6 +26,13 @@
       "tags": ["documentation", "readme", "composite-action"]
     },
     {
+      "id": "pkg-cache-enforcement",
+      "name": "Package Cache Enforcement",
+      "description": "Ensure every network download uses inherited PKG_CACHE mirror support",
+      "path": "pkg-cache-enforcement/SKILL.md",
+      "tags": ["pkg-cache", "downloads", "mirrors", "network"]
+    },
+    {
       "id": "docker-ci",
       "name": "Docker CI Manager",
       "description": "Configure, build, export OCI tarballs, push Docker images, and perform container scans",
@@ -35,7 +42,7 @@
     {
       "id": "runtime-setup",
       "name": "Runtime Setup Manager",
-      "description": "Create runtime setup actions (Node, Go, Java, Hugo, Gradle) with pkg-cache support",
+      "description": "Create runtime setup actions (Node, Go, Java, Hugo, Gradle) using inherited PKG_CACHE",
       "path": "runtime-setup/SKILL.md",
       "tags": ["runtime", "node", "go", "java", "gradle", "cache"]
     },

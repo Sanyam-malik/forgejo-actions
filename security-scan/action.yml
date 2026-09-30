@@ -12,11 +12,6 @@ inputs:
     required: false
     default: /usr/local/bin
 
-  pkg_cache:
-    description: Package cache host or base URL to mirror GitHub releases through.
-    required: false
-    default: ""
-
   gitleaks_version:
     description: Gitleaks version to install. Defaults to the latest release.
     required: false
@@ -129,7 +124,6 @@ runs:
         scan_path: ${{ inputs.scan_path }}
         gitleaks_version: ${{ inputs.gitleaks_version }}
         gitleaks_install_dir: ${{ inputs.gitleaks_install_dir }}
-        pkg_cache: ${{ inputs.pkg_cache }}
 
     # ============================================================
     # Dependency / vulnerability scan
@@ -147,7 +141,6 @@ runs:
         ignore_unfixed: ${{ inputs.ignore_unfixed }}
         trivy_version: ${{ inputs.trivy_version }}
         trivy_install_dir: ${{ inputs.trivy_install_dir }}
-        pkg_cache: ${{ inputs.pkg_cache }}
 
     # ============================================================
     # Security summary

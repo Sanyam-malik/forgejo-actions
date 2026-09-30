@@ -17,11 +17,6 @@ inputs:
     required: false
     default: ""
 
-  pkg_cache:
-    description: Package cache host or base URL
-    required: false
-    default: ""
-
 outputs:
   output_dir:
     description: Hugo build output directory
@@ -33,14 +28,19 @@ runs:
     - name: Build site
       id: build
       shell: bash
+      env:
+        PKG_CACHE: ${{ env.PKG_CACHE }}
+        WORKING_DIR: ${{ inputs.working_dir }}
+        BASE_URL_INPUT: ${{ inputs.base_url }}
+        OUTPUT_DIR_INPUT: ${{ inputs.output_dir }}
       run: |
         set -euo pipefail
 
         # ----------------------------------------
         # Setup Go module proxy (CRITICAL)
         # ----------------------------------------
-        if [ -n "${{ inputs.pkg_cache }}" ]; then
-          PKG_CACHE="${{ inputs.pkg_cache }}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [ -n "$PKG_CACHE" ]; then
           PKG_CACHE_BASE="$PKG_CACHE"
           case "$PKG_CACHE_BASE" in
             http://*|https://*) ;;
@@ -62,21 +62,21 @@ runs:
           echo "No pkg-cache provided, using default Go proxy"
         fi
 
-        cd "${{ inputs.working_dir }}"
+        cd "${WORKING_DIR}"
 
         # ----------------------------------------
         # Run Hugo build
         # ----------------------------------------
-        if [ -n "${{ inputs.output_dir }}" ]; then
-          echo "Using custom output directory: ${{ inputs.output_dir }}"
+        if [ -n "${OUTPUT_DIR_INPUT}" ]; then
+          echo "Using custom output directory: ${OUTPUT_DIR_INPUT}"
 
           hugo \
             --minify \
             --gc \
-            --baseURL "${{ inputs.base_url }}" \
-            --destination "${{ inputs.output_dir }}"
+            --baseURL "${BASE_URL_INPUT}" \
+            --destination "${OUTPUT_DIR_INPUT}"
 
-          OUTPUT_DIR="${{ inputs.output_dir }}"
+          OUTPUT_DIR="${OUTPUT_DIR_INPUT}"
 
         else
           echo "No output_dir provided. Running Hugo with default output."
@@ -84,7 +84,7 @@ runs:
           hugo \
             --minify \
             --gc \
-            --baseURL "${{ inputs.base_url }}"
+            --baseURL "${BASE_URL_INPUT}"
 
           # ----------------------------------------
           # Validate Hugo output

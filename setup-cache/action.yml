@@ -1,26 +1,47 @@
 name: Setup Package Cache
-description: Rewrite system package repositories to use a package cache
-
-inputs:
-  pkg_cache:
-    description: Package cache host or base URL
-    required: true
+description: Configure system package repositories and export the package cache
 
 runs:
   using: composite
   steps:
     - name: Configure package cache
       shell: bash
+      env:
+        SERVER_URL: ${{ github.server_url }}
       run: |
-        set -e
+        set -euo pipefail
 
-        PKG_CACHE="${{ inputs.pkg_cache }}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [ -z "$PKG_CACHE" ]; then
+          SERVER_HOST="${SERVER_URL#https://}"
+          SERVER_HOST="${SERVER_HOST#http://}"
+          SERVER_HOST="${SERVER_HOST%%/*}"
+          SERVER_HOST="${SERVER_HOST%%:*}"
+
+          if [ -n "$SERVER_HOST" ]; then
+            if [[ "$SERVER_HOST" == *.* ]]; then
+              ROOT_DOMAIN="$(printf '%s\n' "$SERVER_HOST" | awk -F. '{print $(NF-1)"."$NF}')"
+            else
+              ROOT_DOMAIN="$SERVER_HOST"
+            fi
+            PKG_CACHE="pkg-cache.${ROOT_DOMAIN}"
+          fi
+        fi
+
+        if [ -z "$PKG_CACHE" ]; then
+          echo "No package cache could be derived; leaving system repositories unchanged."
+          echo "PKG_CACHE=" >> "$GITHUB_ENV"
+          exit 0
+        fi
+
         PKG_CACHE_BASE="$PKG_CACHE"
         case "$PKG_CACHE_BASE" in
           http://*|https://*) ;;
           *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
         esac
         PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+        export PKG_CACHE="$PKG_CACHE_BASE"
+        echo "PKG_CACHE=$PKG_CACHE_BASE" >> "$GITHUB_ENV"
 
         echo "Using package cache: $PKG_CACHE_BASE"
 

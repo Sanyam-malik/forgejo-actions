@@ -22,11 +22,6 @@ inputs:
     required: false
     default: /usr/local/bin
 
-  pkg_cache:
-    description: Package cache host or base URL to install Gitleaks through, if an install is needed.
-    required: false
-    default: ""
-
   fail_build:
     description: >
       If "true", this action fails itself (exit 1) when secret_count is
@@ -81,7 +76,6 @@ runs:
       with:
         version: ${{ inputs.gitleaks_version }}
         install_dir: ${{ inputs.gitleaks_install_dir }}
-        pkg_cache: ${{ inputs.pkg_cache }}
 
     - id: gitleaks-version
       name: Record Gitleaks version

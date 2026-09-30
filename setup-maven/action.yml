@@ -1,12 +1,7 @@
 name: Setup Maven
-description: Install Maven with optional pkg-cache mirror
+description: Install Maven using the inherited PKG_CACHE mirror when set
 
 inputs:
-  pkg_cache:
-    description: Package cache host or base URL (reverse proxy cache)
-    required: false
-    default: ""
-
   maven_version:
     description: Maven version (use 'latest' for current stable release)
     required: false
@@ -23,21 +18,42 @@ runs:
     - id: install
       name: Install Maven
       shell: bash
+      env:
+        MAVEN_VERSION: ${{ inputs.maven_version }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
-        set -e
+        set -euo pipefail
 
-        PKG_CACHE="${{ inputs.pkg_cache }}"
-        VERSION="${{ inputs.maven_version }}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        VERSION="${MAVEN_VERSION}"
+
+        if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+          MAVEN_REPO_BASE="${PKG_CACHE_BASE}/repo.maven.apache.org"
+          MAVEN_DOWNLOAD_BASE="${PKG_CACHE_BASE}/dlcdn.apache.org"
+          MAVEN_ARCHIVE_BASE="${PKG_CACHE_BASE}/archive.apache.org"
+          echo "Using pkg-cache mirror for Maven sources"
+        else
+          MAVEN_REPO_BASE="https://repo.maven.apache.org"
+          MAVEN_DOWNLOAD_BASE="https://dlcdn.apache.org"
+          MAVEN_ARCHIVE_BASE="https://archive.apache.org"
+          echo "Using public Apache sources"
+        fi
 
         # --------------------------------------------------
         # Resolve latest version (strict X.Y.Z)
         # --------------------------------------------------
         if [ "$VERSION" = "latest" ]; then
-          METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
+          METADATA_URL="${MAVEN_REPO_BASE}/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
 
           echo "Resolving latest stable Maven version..."
 
-          VERSION=$(curl -s "$METADATA_URL" \
+          VERSION=$(curl -fsSL --retry 5 --retry-delay 5 "$METADATA_URL" \
             | sed -n 's:.*<version>\(.*\)</version>.*:\1:p' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
@@ -53,28 +69,10 @@ runs:
         BASE_PATH="maven-${MAJOR_VERSION}"
         FILE="apache-maven-${VERSION}-bin.tar.gz"
 
-        if [ -n "$PKG_CACHE" ]; then
-          PKG_CACHE_BASE="$PKG_CACHE"
-          case "$PKG_CACHE_BASE" in
-            http://*|https://*) ;;
-            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
-          esac
-          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
-
-          echo "Using pkg-cache for ALL sources"
-
-          URLS=(
-            "${PKG_CACHE_BASE}/dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
-            "${PKG_CACHE_BASE}/archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
-          )
-        else
-          echo "Using public Apache sources"
-
-          URLS=(
-            "https://dlcdn.apache.org/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
-            "https://archive.apache.org/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
-          )
-        fi
+        URLS=(
+          "${MAVEN_DOWNLOAD_BASE}/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+          "${MAVEN_ARCHIVE_BASE}/dist/maven/${BASE_PATH}/${VERSION}/binaries/${FILE}"
+        )
 
         # --------------------------------------------------
         # Download with fallback

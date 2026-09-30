@@ -12,7 +12,7 @@ These actions simplify common CI tasks such as:
 * 📦 Package publishing (Maven & Gradle)
 * 🧰 Git operations & package cache integrations
 
-The actions are optimized for **self-hosted runners**, **pkg-cache mirrors**, **air-gapped networks**, and **multi-platform CI environments**.
+The actions are optimized for **self-hosted runners**, **air-gapped networks**, and **multi-platform CI environments**.
 
 ---
 
@@ -196,13 +196,12 @@ Link container images with repository package registries.
 
 ### `setup-node`
 
-Install Node.js with optional **pkg-cache mirror** acceleration.
+Install Node.js.
 
 ```yaml
 - uses: actions/forgejo/setup-node@v1
   with:
     node_version: 20
-    pkg_cache: ${{ steps.pkg.outputs.pkg_cache }}
 ```
 
 ---
@@ -233,13 +232,12 @@ Install OpenJDK.
 
 ### `setup-maven`
 
-Install Apache Maven with automatic version resolution and `pkg-cache` mirror support.
+Install Apache Maven with automatic version resolution.
 
 ```yaml
 - uses: actions/forgejo/setup-maven@v1
   with:
     maven_version: "latest"
-    pkg_cache: ${{ steps.pkg.outputs.pkg_cache }}
 ```
 
 ---
@@ -380,7 +378,15 @@ Install Trivy vulnerability scanner binary.
 
 ### `setup-cache`
 
-Configure system package caching (APT / package mirrors).
+Configure system package repositories for subsequent actions.
+
+```yaml
+steps:
+  - uses: actions/forgejo/setup-cache@v1
+  - uses: actions/forgejo/setup-node@v1
+    with:
+      node_version: 20
+```
 
 ---
 
@@ -418,7 +424,8 @@ Check whether a value matches a regular expression.
 
 ### `utils/detect-pkg-cache`
 
-Automatically detect `pkg-cache` host domain from runner environment.
+Compatibility utility for detecting a package-cache host domain. New workflows
+should use `setup-cache`.
 
 ```yaml
 - uses: actions/forgejo/utils/detect-pkg-cache@v1
@@ -428,10 +435,16 @@ Automatically detect `pkg-cache` host domain from runner environment.
 ---
 
 ### Additional Utilities (`utils/`)
-* **`get-latest-release`**: Fetch latest GitHub/Forgejo release assets.
-* **`get-latest-tag`**: Fetch latest Git tag.
+* **`get-latest-release`**: Fetch latest release assets from GitHub, GitLab, Gitea, Forgejo, or OneDev.
+* **`get-latest-tag`**: Fetch the latest tag from any supported provider using git.
+* **`get-release`**: Fetch a selected release (or the latest release by default).
+* **`get-tag`**: Fetch a selected tag (or the latest tag by default).
 * **`inject-credentials`**: Inject credentials into configuration files.
 * **`set-image`**: Format image reference names and namespaces.
+
+The tag and release utilities derive provider and repository identity from the
+repository URL. Use `provider` or `api_url` only when an installation needs an
+explicit override.
 
 ---
 
@@ -443,8 +456,9 @@ Available skills in `.agents/skills/` and `skills/`:
 * `action-creator`: Scaffold and create new composite actions adhering to repository standards.
 * `action-validator`: Lint YAML syntax, verify `shell: bash` parameters, and validate shell safety.
 * `action-documentation`: Create and maintain action-level README files synchronized with `action.yml`.
+* `pkg-cache-enforcement`: Ensure every network download uses the configured package cache when supported.
 * `docker-ci`: Automate Docker builds, multi-platform targets, and Trivy scans.
-* `runtime-setup`: Manage runtime installer actions and `pkg-cache` configurations.
+* `runtime-setup`: Manage runtime installer actions and package-cache integrations.
 * `release-manager`: Automate `v1` major version tag updates.
 
 ---
@@ -491,6 +505,8 @@ actions/
       ├ detect-pkg-cache
       ├ get-latest-release
       ├ get-latest-tag
+      ├ get-release
+      ├ get-tag
       ├ inject-credentials
       └ set-image
 ```
@@ -513,15 +529,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect Package Cache
-        uses: actions/forgejo/utils/detect-pkg-cache@v1
-        id: pkg
+      - name: Setup Package Cache
+        uses: actions/forgejo/setup-cache@v1
 
       - name: Setup Node
         uses: actions/forgejo/setup-node@v1
         with:
           node_version: 20
-          pkg_cache: ${{ steps.pkg.outputs.pkg_cache }}
 
       - name: Run Security Scan
         uses: actions/forgejo/security-scan@v1
@@ -542,7 +556,7 @@ jobs:
 This action collection aims to:
 
 * Simplify CI/CD pipelines across **Forgejo, Gitea, and GitHub Actions**.
-* Accelerate builds using **pkg-cache mirrors** and self-hosted optimizations.
+* Accelerate builds using self-hosted optimizations.
 * Provide **secure, vendor-neutral CI primitives** with built-in scanning.
 
 ---

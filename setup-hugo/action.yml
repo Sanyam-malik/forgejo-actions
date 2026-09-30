@@ -1,26 +1,24 @@
 name: Setup Hugo
-description: Install Hugo Extended from official release
+description: Install Hugo Extended using the inherited PKG_CACHE mirror when set
 
 inputs:
   hugo_version:
     description: Hugo version
     required: true
 
-  pkg_cache:
-    description: Package cache host or base URL
-    required: false
-    default: ""
-
 runs:
   using: composite
   steps:
     - name: Install Hugo
       shell: bash
+      env:
+        HUGO_VERSION: ${{ inputs.hugo_version }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
         set -e
 
-        PKG_CACHE="${{ inputs.pkg_cache }}"
-        VERSION="${{ inputs.hugo_version }}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        VERSION="${HUGO_VERSION}"
 
         ARCH=$(uname -m)
         if [ "$ARCH" = "x86_64" ]; then

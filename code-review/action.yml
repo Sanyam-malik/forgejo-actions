@@ -13,11 +13,6 @@ inputs:
     required: false
     default: ${{ github.token }}
 
-  pkg_cache:
-    description: Package cache host or base URL
-    required: false
-    default: ""
-
   languages:
     description: >
       Comma separated list of languages to force MegaLinter to lint.
@@ -168,8 +163,8 @@ runs:
       id: install-reviewdog
       shell: bash
       env:
-        PKG_CACHE: ${{ inputs.pkg_cache }}
         REVIEWDOG_VERSION: ${{ inputs.reviewdog-version }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
         set -euo pipefail
 

@@ -1,33 +1,34 @@
 # Get Latest Tag
 
-Fetch the latest Git tag from a repository URL
+Resolves the newest tag from a GitHub, GitLab, Gitea, Forgejo, or OneDev
+repository using the git protocol. This works even when a provider does not
+offer a compatible REST API.
 
 ## Usage
 
 ```yaml
 steps:
-  - name: Get Latest Tag
-    id: get-latest-tag
+  - id: latest-tag
     uses: your-org/forgejo-actions/utils/get-latest-tag@v1
     with:
       repo_url: https://forgejo.example.com/owner/repository.git
+      token: ${{ secrets.REPOSITORY_TOKEN }}
 ```
 
 ## Inputs
 
 | Name | Description | Required | Default |
 | --- | --- | :---: | --- |
-| `repo_url` | Repository URL | Yes | — |
-| `token` | Auth token for private repositories | No | `""` |
+| `repo_url` | Repository clone URL (HTTPS or SSH) | Yes | — |
+| `token` | Optional token for private repositories | No | `""` |
+| `provider` | Provider override: `github`, `gitlab`, `gitea`, `forgejo`, or `onedev` | No | `""` |
+| `api_url` | Optional API base URL override for provider-compatible callers (not needed for git resolution) | No | `""` |
+
+Provider identity is derived from the repository host. The token is passed
+through the environment to git and is never embedded in the repository URL.
 
 ## Outputs
 
 | Name | Description |
 | --- | --- |
-| `tag` | Latest git tag |
-
-## Behavior and requirements
-
-- Runs as a vendor-neutral composite action on the current CI runner.
-- Required inputs must be supplied; they have no declared defaults.
-- To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.
+| `tag` | Newest tag according to version-aware sorting |

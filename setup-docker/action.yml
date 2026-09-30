@@ -12,8 +12,21 @@ runs:
   steps:
     - name: Setup Docker (install + configure)
       shell: bash
+      env:
+        PKG_CACHE: ${{ env.PKG_CACHE }}
+        REGISTRY_MIRROR: ${{ inputs.registry_mirror }}
       run: |
         set -euo pipefail
+
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+        fi
 
         # Handle sudo
         if command -v sudo >/dev/null 2>&1; then
@@ -56,7 +69,14 @@ runs:
               ;;
             *)
               echo "Using Docker convenience script..."
-              curl -fsSL https://get.docker.com | sh
+              if [ -n "$PKG_CACHE" ]; then
+                INSTALLER_URL="${PKG_CACHE_BASE}/get.docker.com"
+                echo "Using pkg-cache mirror for Docker installer: $INSTALLER_URL"
+              else
+                INSTALLER_URL="https://get.docker.com"
+                echo "Using official Docker installer"
+              fi
+              curl -fsSL --retry 5 --retry-delay 5 "$INSTALLER_URL" | sh
               ;;
           esac
         fi
@@ -92,13 +112,13 @@ runs:
         fi
 
         # ✅ Configure registry mirror (EOF-safe)
-        if [ -n "${{ inputs.registry_mirror }}" ]; then
+        if [ -n "$REGISTRY_MIRROR" ]; then
           echo "Configuring registry mirror..."
 
           $SUDO mkdir -p /etc/docker
 
           # 🔥 No heredoc → no YAML bugs
-          printf '{\n  "registry-mirrors": ["%s"]\n}\n' "${{ inputs.registry_mirror }}" | $SUDO tee /etc/docker/daemon.json > /dev/null
+          printf '{\n  "registry-mirrors": ["%s"]\n}\n' "$REGISTRY_MIRROR" | $SUDO tee /etc/docker/daemon.json > /dev/null
 
           echo "Restarting Docker (clean)..."
 
@@ -111,7 +131,7 @@ runs:
           sleep 5
 
           # ✅ verify mirror is active
-          if docker info | grep -q "${{ inputs.registry_mirror }}"; then
+          if docker info | grep -q "$REGISTRY_MIRROR"; then
             echo "Registry mirror applied ✅"
           else
             echo "Registry mirror NOT applied ❌"

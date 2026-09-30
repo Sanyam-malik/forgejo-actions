@@ -1,12 +1,7 @@
 name: Setup Gradle
-description: Install Gradle optionally using pkg-cache mirror
+description: Install Gradle using the inherited PKG_CACHE mirror when set
 
 inputs:
-  pkg_cache:
-    description: Package cache host or base URL
-    required: false
-    default: ""
-
   gradle_version:
     description: Gradle version (use 'latest' for current release)
     required: false
@@ -23,11 +18,14 @@ runs:
     - id: install
       name: Install Gradle
       shell: bash
+      env:
+        GRADLE_VERSION: ${{ inputs.gradle_version }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
-        set -e
+        set -euo pipefail
 
-        PKG_CACHE="${{ inputs.pkg_cache }}"
-        VERSION="${{ inputs.gradle_version }}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        VERSION="${GRADLE_VERSION}"
 
         if [ -n "$PKG_CACHE" ]; then
           PKG_CACHE_BASE="$PKG_CACHE"
@@ -45,8 +43,14 @@ runs:
         fi
 
         if [ "$VERSION" = "latest" ]; then
-          JSON=$(curl -s "${BASE_URL}/versions/current")
-          VERSION=$(echo "$JSON" | grep -oP '"version"\s*:\s*"\K[^"]+')
+          JSON=$(curl -fsSL --retry 5 --retry-delay 5 "${BASE_URL}/versions/current")
+          VERSION=$(printf '%s\n' "$JSON" |
+            sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+            head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine the latest Gradle version"
+            exit 1
+          fi
         fi
 
         DOWNLOAD_URL="${BASE_URL}/distributions/gradle-${VERSION}-bin.zip"
@@ -54,7 +58,7 @@ runs:
         echo "Installing Gradle $VERSION"
         echo "Download URL: $DOWNLOAD_URL"
 
-        curl -L --retry 5 --retry-delay 5 \
+        curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
           -o gradle.zip \
           "$DOWNLOAD_URL"
 
@@ -63,9 +67,10 @@ runs:
 
         echo "gradle_version=$VERSION" >> "$GITHUB_OUTPUT"
 
-        echo "GRADLE_HOME=$HOME/.gradle-dist" >> $GITHUB_ENV
-        echo "PATH=$HOME/.gradle-dist/bin:$PATH" >> $GITHUB_ENV
-        export PATH=$HOME/.gradle-dist/bin:$PATH
+        export GRADLE_HOME="$HOME/.gradle-dist"
+        echo "GRADLE_HOME=$GRADLE_HOME" >> "$GITHUB_ENV"
+        echo "PATH=$GRADLE_HOME/bin:$PATH" >> "$GITHUB_ENV"
+        export PATH="$GRADLE_HOME/bin:$PATH"
 
         echo "Gradle installed at: $GRADLE_HOME/bin/gradle"
         echo "Detected gradle path: $(command -v gradle)"

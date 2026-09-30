@@ -41,13 +41,15 @@ forgejo-actions/
 ├── setup-gradle/             # Gradle installer with mirror support
 ├── setup-hugo/               # Hugo Extended installer
 ├── setup-java/               # OpenJDK installer
-├── setup-node/               # Node.js installer with pkg-cache mirror
+├── setup-node/               # Node.js installer using inherited PKG_CACHE
 ├── setup-python/              # Python runtime installer
 ├── setup-trivy/              # Trivy security tool installer
 ├── utils/                    # Common helper composite actions
-│   ├── detect-pkg-cache/     # Auto-detect pkg-cache hostname
-│   ├── get-latest-release/   # Fetch GitHub/Forgejo release tarball
-│   ├── get-latest-tag/       # Fetch latest git tag
+│   ├── detect-pkg-cache/     # Legacy cache-host detection utility
+│   ├── get-latest-release/   # Fetch latest release assets across providers
+│   ├── get-latest-tag/       # Fetch latest git tag across providers
+│   ├── get-release/          # Fetch a selected release or latest release
+│   ├── get-tag/              # Fetch a selected tag or latest tag
 │   ├── inject-credentials/   # Inject configuration credentials
 │   └── set-image/            # Format image names and namespaces
 ├── .github/workflows/        # CI automation workflows
@@ -65,8 +67,10 @@ forgejo-actions/
    - Pass inputs to bash scripts using environment variables (`env:`) rather than inline string interpolation (`${{ inputs.foo }}`) inside raw bash commands when variables may contain spaces or special characters.
    - Use `$GITHUB_OUTPUT` and `$GITHUB_ENV` file commands rather than deprecated `::set-output`.
 4. **Mirror & Offline First Support**:
-   - Support `pkg_cache` mirror parameters where applicable to allow air-gapped or accelerated CI environments.
-   - Always fallback gracefully to official distribution endpoints if `pkg_cache` is empty.
+   - `setup-cache` is the single action responsible for deriving the package-cache hostname from `github.server_url`, configuring system repositories, and exporting normalized `PKG_CACHE` through `GITHUB_ENV`.
+   - Consumers read inherited `PKG_CACHE` and always fall back gracefully to official distribution endpoints when it is unset.
+   - Preserve explicit overrides by allowing a pre-existing `PKG_CACHE` environment value to take precedence.
+   - Every network download—including `curl`, `wget`, Python HTTP clients, release APIs, archives, and package managers—must use the inherited `PKG_CACHE` mirror when supported.
 
 ---
 
@@ -115,8 +119,9 @@ This repository provides vendor-neutral agent skills stored under `.agents/skill
 | `action-creator` | Scaffold and create a new composite CI action | `.agents/skills/action-creator/SKILL.md` |
 | `action-validator` | Lint, validate syntax, and check bash safety of `action.yml` files | `.agents/skills/action-validator/SKILL.md` |
 | `action-documentation` | Create and maintain action-level README files | `.agents/skills/action-documentation/SKILL.md` |
+| `pkg-cache-enforcement` | Ensure every network download uses inherited `PKG_CACHE` mirror support | `.agents/skills/pkg-cache-enforcement/SKILL.md` |
 | `docker-ci` | Configure, build, export, and push Docker OCI images | `.agents/skills/docker-ci/SKILL.md` |
-| `runtime-setup` | Implement language runtime setup actions with `pkg-cache` support | `.agents/skills/runtime-setup/SKILL.md` |
+| `runtime-setup` | Implement language runtime setup actions with shared `PKG_CACHE` support | `.agents/skills/runtime-setup/SKILL.md` |
 | `release-manager` | Manage release tags (`v1`) and workflow dispatch events | `.agents/skills/release-manager/SKILL.md` |
 
 ---
@@ -146,4 +151,4 @@ Before completing any task:
 1. Ensure all modified `action.yml` files follow strict composite action conventions.
 2. Verify shell script error handling (`set -euo pipefail` or `set -e`).
 3. Update `Readme.md` if adding a new action or adding/modifying input parameters.
-4. Ensure no hardcoded credentials or environment-specific hostnames exist outside `pkg_cache` inputs.
+4. Ensure no hardcoded credentials or environment-specific hostnames exist; use `setup-cache` and the `PKG_CACHE` environment override for mirrors.

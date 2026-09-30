@@ -16,14 +16,15 @@ inputs:
   version:
     type: string
     description: "Major or specific version string"
-  pkg_cache:
-    type: string
-    description: "Package cache mirror hostname or URL"
 ---
 
 # Runtime Setup Skill
 
 This vendor-neutral skill defines standard patterns for language runtime installer actions that support self-hosted runners and offline/mirrored package caches.
+`setup-cache` is the single setup action for mirror detection and system
+repository configuration. It derives a cache from `github.server_url`, honors
+an existing `PKG_CACHE` environment value, normalizes it, and exports it
+through `GITHUB_ENV`.
 
 ## Design Patterns
 
@@ -36,10 +37,10 @@ This vendor-neutral skill defines standard patterns for language runtime install
      ```
 
 2. **Package Cache Mirror Resolution**:
-   - Automatically inspect `pkg_cache` input.
+   - Read the inherited `PKG_CACHE` environment variable.
    - Prepend `https://` if protocol is missing.
    - Strip trailing slashes.
-   - Fall back to primary upstream endpoints when `pkg_cache` is empty.
+   - Fall back to primary upstream endpoints when `PKG_CACHE` is empty.
 
 3. **PATH & Environment Exports**:
    - Append binary directories to runner PATH:
@@ -59,4 +60,5 @@ This vendor-neutral skill defines standard patterns for language runtime install
 - `setup-java`: OpenJDK distribution setup.
 - `setup-gradle`: Gradle wrapper & mirror installer.
 - `setup-hugo`: Hugo Extended binary setup.
-- `utils/detect-pkg-cache`: Automatically detects `pkg-cache.<domain>` from `github.server_url`.
+- `setup-cache`: Detects and configures the package cache, then exports `PKG_CACHE`.
+- `utils/detect-pkg-cache`: Legacy compatibility utility that only computes a hostname; it does not configure repositories or export `PKG_CACHE`.

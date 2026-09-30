@@ -1,6 +1,6 @@
 # Setup Maven
 
-Install Maven with optional pkg-cache mirror
+Install Maven using inherited PKG_CACHE mirror support
 
 ## Usage
 
@@ -15,7 +15,6 @@ steps:
 
 | Name | Description | Required | Default |
 | --- | --- | :---: | --- |
-| `pkg_cache` | Package cache host or base URL (reverse proxy cache) | No | `""` |
 | `maven_version` | Maven version (use 'latest' for current stable release) | No | `latest` |
 
 ## Outputs
@@ -26,6 +25,7 @@ steps:
 
 ## Behavior and requirements
 
+- Reads the inherited `PKG_CACHE` environment variable for mirror access when it is set; otherwise uses official sources. Run `setup-cache` once to derive and export it, or set `PKG_CACHE` explicitly as a job environment override.
+
 - Runs as a vendor-neutral composite action on the current CI runner.
-- `pkg_cache` is optional; leave it empty to use the action's default package or download source, or set it to a compatible mirror.
 - To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.

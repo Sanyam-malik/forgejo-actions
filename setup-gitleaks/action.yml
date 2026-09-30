@@ -12,11 +12,6 @@ inputs:
     required: false
     default: /usr/local/bin
 
-  pkg_cache:
-    description: Package cache host or base URL to mirror GitHub releases through (e.g. an internal proxy). Falls back to github.com when empty.
-    required: false
-    default: ""
-
 outputs:
   version:
     description: The Gitleaks version that was installed
@@ -28,6 +23,10 @@ runs:
   steps:
     - id: install
       shell: bash
+      env:
+        GITLEAKS_VERSION: ${{ inputs.version }}
+        GITLEAKS_INSTALL_DIR: ${{ inputs.install_dir }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
         set -euo pipefail
 
@@ -64,9 +63,9 @@ runs:
         # ------------------------------------------------------------
         # Configuration
         # ------------------------------------------------------------
-        REQUESTED_VERSION="${{ inputs.version }}"
-        INSTALL_DIR="${{ inputs.install_dir }}"
-        PKG_CACHE="${{ inputs.pkg_cache }}"
+        REQUESTED_VERSION="${GITLEAKS_VERSION}"
+        INSTALL_DIR="${GITLEAKS_INSTALL_DIR}"
+        PKG_CACHE="${PKG_CACHE:-}"
 
         # ------------------------------------------------------------
         # Skip install if the requested version is already present

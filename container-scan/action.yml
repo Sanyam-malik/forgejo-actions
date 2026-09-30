@@ -39,11 +39,6 @@ inputs:
     required: false
     default: latest
 
-  pkg_cache:
-    description: Package cache host or base URL to install Trivy through, if an install is needed
-    required: false
-    default: ""
-
   fail_build:
     description: Fail this action when matching vulnerabilities are found or the scan errors out.
     required: false
@@ -87,7 +82,6 @@ runs:
         ignore_unfixed: ${{ inputs.ignore_unfixed }}
         output_dir: ${{ inputs.output_dir }}
         trivy_version: ${{ inputs.trivy_version }}
-        pkg_cache: ${{ inputs.pkg_cache }}
         fail_build: ${{ inputs.fail_build }}
 
     # ============================================================

@@ -83,9 +83,27 @@ runs:
         DEFAULT_REPO_OWNER: ${{ github.repository_owner }}
         DEFAULT_ACTOR: ${{ github.actor }}
         DEFAULT_TOKEN: ${{ github.token }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
 
       run: |
         set -euo pipefail
+
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [[ -n "${PKG_CACHE}" ]]; then
+          PKG_CACHE_BASE="${PKG_CACHE}"
+          case "${PKG_CACHE_BASE}" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://${PKG_CACHE_BASE}" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+          CRANE_API_BASE="${PKG_CACHE_BASE}/api.github.com"
+          CRANE_DOWNLOAD_BASE="${PKG_CACHE_BASE}/github.com"
+          echo "Using pkg-cache mirror for crane release lookup and download"
+        else
+          CRANE_API_BASE="https://api.github.com"
+          CRANE_DOWNLOAD_BASE="https://github.com"
+          echo "Using official GitHub endpoints for crane"
+        fi
         
         # ------------------------------------------------------------
         # Normalize helper functions
@@ -343,7 +361,7 @@ runs:
         
           CRANE_VERSION="$(
             curl -fsSL \
-              https://api.github.com/repos/google/go-containerregistry/releases/latest |
+              "${CRANE_API_BASE}/repos/google/go-containerregistry/releases/latest" |
               jq -r '.tag_name'
           )"
         
@@ -354,7 +372,7 @@ runs:
         
           echo "Installing crane ${CRANE_VERSION} for ${CRANE_ARCH}..."
         
-          CRANE_URL="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
+          CRANE_URL="${CRANE_DOWNLOAD_BASE}/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
         
           TMP_DIR="$(mktemp -d)"
         

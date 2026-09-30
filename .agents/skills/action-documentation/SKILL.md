@@ -31,3 +31,8 @@ credentials.
 
 Verify every documented input and output exists in `action.yml`, remove claims
 that refactoring made obsolete, and run YAML validation after metadata changes.
+
+For provider-aware tag/release actions, document that provider identity is
+derived from the repository URL, `provider`/`api_url` are optional overrides,
+`version: latest` delegates to the latest helper, GitLab paths are URL-encoded,
+and git-tag fallback may return an empty asset list when no release API exists.
