@@ -21,29 +21,104 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Link container package
+      shell: bash
+      env:
+        REGISTRY_API: ${{ inputs.registry_api }}
+        PACKAGE_NAMESPACE: ${{ inputs.namespace }}
+        PACKAGE_IMAGE: ${{ inputs.image }}
+        PACKAGE_USERNAME: ${{ inputs.username }}
+        PACKAGE_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
 
-        REPO_NAME=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
-
-        PACKAGE_INFO=$(curl -s -u "${{ inputs.username }}:${{ inputs.token }}" \
-          "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}")
-
-        if echo "$PACKAGE_INFO" | grep -qi "\"repository\":{\"name\":\"$REPO_NAME\""; then
-          echo "Package already linked to $REPO_NAME."
-        else
-          echo "Package not linked, linking via API..."
-
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -u "${{ inputs.username }}:${{ inputs.token }}" \
-            "${{ inputs.registry_api }}/packages/${{ inputs.namespace }}/container/${{ inputs.image }}/-/link/$REPO_NAME")
-
-          if [ "$HTTP_STATUS" -eq 201 ]; then
-            echo "Package linked successfully."
-          elif [ "$HTTP_STATUS" -eq 409 ]; then
-            echo "Package already linked."
-          else
-            echo "Unexpected HTTP status: $HTTP_STATUS"
-          fi
+        if [[ -z "${GITHUB_REPOSITORY:-}" || "${GITHUB_REPOSITORY}" != */* ]]; then
+          echo "::error::GITHUB_REPOSITORY must contain an owner and repository name."
+          exit 1
         fi
+
+        url_encode() {
+          local value="$1"
+          local encoded=""
+          local character
+          local index
+
+          for ((index = 0; index < ${#value}; index++)); do
+            character="${value:index:1}"
+            case "${character}" in
+              [a-zA-Z0-9.~_-])
+                encoded+="${character}"
+                ;;
+              *)
+                printf -v encoded '%s%%%02X' "${encoded}" "'${character}"
+                ;;
+            esac
+          done
+          printf '%s' "${encoded}"
+        }
+
+        API_BASE="${REGISTRY_API%/}"
+        REPOSITORY_OWNER="${GITHUB_REPOSITORY%%/*}"
+        REPOSITORY_NAME="${GITHUB_REPOSITORY##*/}"
+        REPOSITORY_OWNER="$(printf '%s' "${REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+        REPOSITORY_NAME="$(printf '%s' "${REPOSITORY_NAME}" | tr '[:upper:]' '[:lower:]')"
+
+        PACKAGE_NAMESPACE_NORMALIZED="$(printf '%s' "${PACKAGE_NAMESPACE}" | tr '[:upper:]' '[:lower:]')"
+        PACKAGE_IMAGE_NORMALIZED="$(printf '%s' "${PACKAGE_IMAGE}" | tr '[:upper:]' '[:lower:]')"
+
+        if [[ "${PACKAGE_NAMESPACE_NORMALIZED}" == "${REPOSITORY_OWNER}" &&
+              ( "${PACKAGE_IMAGE_NORMALIZED}" == "${REPOSITORY_NAME}" ||
+                "${PACKAGE_IMAGE_NORMALIZED}" == "${REPOSITORY_NAME}/"* ) ]]; then
+          echo "Package name matches the repository; Forgejo auto-links it."
+          exit 0
+        fi
+
+        PACKAGE_NAMESPACE_ENCODED="$(url_encode "${PACKAGE_NAMESPACE}")"
+        PACKAGE_IMAGE_ENCODED="$(url_encode "${PACKAGE_IMAGE}")"
+        REPOSITORY_NAME_ENCODED="$(url_encode "${REPOSITORY_NAME}")"
+
+        LINK_URL="${API_BASE}/packages/${PACKAGE_NAMESPACE_ENCODED}/container/${PACKAGE_IMAGE_ENCODED}/-/link/${REPOSITORY_NAME_ENCODED}"
+        RESPONSE_FILE="$(mktemp)"
+        trap 'rm -f "${RESPONSE_FILE}"' EXIT
+
+        HTTP_STATUS="$(
+          curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --user "${PACKAGE_USERNAME}:${PACKAGE_TOKEN}" \
+            --header 'Accept: application/json' \
+            "${LINK_URL}"
+        )"
+
+        response_message="$(
+          tr '[:upper:]' '[:lower:]' < "${RESPONSE_FILE}" |
+            tr '\n' ' '
+        )"
+
+        report_failure() {
+          echo "::error::Forgejo package link failed with HTTP ${HTTP_STATUS}."
+          if [[ -s "${RESPONSE_FILE}" ]]; then
+            echo "API response:"
+            sed 's/[[:space:]]\+/ /g' "${RESPONSE_FILE}"
+          fi
+          exit 1
+        }
+
+        case "${HTTP_STATUS}" in
+          200|201|204)
+            echo "Package linked successfully."
+            ;;
+          400|409)
+            if [[ "${response_message}" =~ already[[:space:]_-]*(linked|exists) ||
+                  "${response_message}" =~ link(ed|ing)?[[:space:]_-]*(already|exists) ||
+                  "${response_message}" =~ already[[:space:]_-]*(associated|connected) ]]; then
+              echo "Package already linked."
+            else
+              report_failure
+            fi
+            ;;
+          *)
+            report_failure
+            ;;
+        esac
