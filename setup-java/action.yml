@@ -1,52 +1,147 @@
 name: Setup Java
-description: Install OpenJDK and configure JAVA_HOME on multiple Linux distributions
+description: Install a Java distribution and configure JAVA_HOME on multiple Linux distributions
 
 inputs:
   java_version:
     description: Java version to install
     required: false
     default: "17"
+  distribution:
+    description: Java distribution to install
+    required: false
+    default: "openjdk"
 
 runs:
   using: composite
   steps:
     - name: Install Java
       shell: bash
+      env:
+        JAVA_VERSION: ${{ inputs.java_version }}
+        JAVA_DISTRIBUTION: ${{ inputs.distribution }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
-        set -e
+        set -euo pipefail
 
-        JAVA_VERSION="${{ inputs.java_version }}"
+        JAVA_DISTRIBUTION="${JAVA_DISTRIBUTION,,}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+          FOOJAY_BASE="${PKG_CACHE_BASE}/api.foojay.io"
+          echo "Using pkg-cache mirror for Foojay: $FOOJAY_BASE"
+        else
+          FOOJAY_BASE="https://api.foojay.io"
+          echo "Using official Foojay distribution service"
+        fi
+
+        case "$JAVA_DISTRIBUTION" in
+          openjdk|temurin|zulu|liberica|microsoft|corretto|oracle|semeru|graalvm|sapmachine|dragonwell|mandrel)
+            ;;
+          *)
+            echo "Unsupported Java distribution: $JAVA_DISTRIBUTION"
+            echo "Supported distributions: openjdk, temurin, zulu, liberica, microsoft, corretto, oracle, semeru, graalvm, sapmachine, dragonwell, mandrel"
+            exit 1
+            ;;
+        esac
 
         if command -v apt-get >/dev/null 2>&1; then
           echo "Detected APT system"
           sudo apt-get update
-          sudo apt-get install -y openjdk-${JAVA_VERSION}-jdk curl unzip
+          if [ "$JAVA_DISTRIBUTION" = "openjdk" ]; then
+            sudo apt-get install -y openjdk-${JAVA_VERSION}-jdk curl unzip
+          else
+            sudo apt-get install -y curl jq tar
+          fi
 
         elif command -v dnf >/dev/null 2>&1; then
           echo "Detected DNF system"
-          sudo dnf install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          if [ "$JAVA_DISTRIBUTION" = "openjdk" ]; then
+            sudo dnf install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          else
+            sudo dnf install -y curl jq tar
+          fi
 
         elif command -v yum >/dev/null 2>&1; then
           echo "Detected YUM system"
-          sudo yum install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          if [ "$JAVA_DISTRIBUTION" = "openjdk" ]; then
+            sudo yum install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          else
+            sudo yum install -y curl jq tar
+          fi
 
         elif command -v apk >/dev/null 2>&1; then
           echo "Detected Alpine system"
-          sudo apk add --no-cache openjdk${JAVA_VERSION} curl unzip
+          if [ "$JAVA_DISTRIBUTION" = "openjdk" ]; then
+            sudo apk add --no-cache openjdk${JAVA_VERSION} curl unzip
+          else
+            sudo apk add --no-cache curl jq tar
+          fi
 
         elif command -v zypper >/dev/null 2>&1; then
           echo "Detected Zypper system"
-          sudo zypper install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          if [ "$JAVA_DISTRIBUTION" = "openjdk" ]; then
+            sudo zypper install -y java-${JAVA_VERSION}-openjdk-devel curl unzip
+          else
+            sudo zypper install -y curl jq tar
+          fi
 
         else
           echo "Unsupported distribution"
           exit 1
         fi
 
-        JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
+        if [ "$JAVA_DISTRIBUTION" != "openjdk" ]; then
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64) ARCH="x64" ;;
+            aarch64) ARCH="aarch64" ;;
+            *)
+              echo "Unsupported architecture for $JAVA_DISTRIBUTION: $ARCH"
+              exit 1
+              ;;
+          esac
 
-        echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-        echo "$JAVA_HOME/bin" >> $GITHUB_PATH
+          case "$JAVA_DISTRIBUTION" in
+            oracle) JAVA_API_DISTRIBUTION="oracle_open_jdk" ;;
+            sapmachine) JAVA_API_DISTRIBUTION="sap_machine" ;;
+            *) JAVA_API_DISTRIBUTION="$JAVA_DISTRIBUTION" ;;
+          esac
+
+          if command -v apk >/dev/null 2>&1; then
+            LIBC_TYPE="musl"
+          else
+            LIBC_TYPE="glibc"
+          fi
+
+          JAVA_HOME="$HOME/.java/${JAVA_DISTRIBUTION}-${JAVA_VERSION}"
+          mkdir -p "$JAVA_HOME"
+          JAVA_PACKAGE=$(mktemp)
+          trap 'rm -f "$JAVA_PACKAGE"' EXIT
+          JAVA_DOWNLOAD_URL=$(curl --fail --location --silent --show-error \
+            "${FOOJAY_BASE}/disco/v3.0/packages?distro=${JAVA_API_DISTRIBUTION}&version=${JAVA_VERSION}&architecture=${ARCH}&archive_type=tar.gz&package_type=jdk&operating_system=linux&lib_c_type=${LIBC_TYPE}&latest=overall" \
+            | jq --raw-output '.result[0].links.pkg_download_redirect // empty')
+          if [ -z "$JAVA_DOWNLOAD_URL" ]; then
+            echo "No ${JAVA_DISTRIBUTION} JDK found for Java ${JAVA_VERSION} on Linux ${ARCH}"
+            exit 1
+          fi
+          if [ -n "$PKG_CACHE" ] && [[ "$JAVA_DOWNLOAD_URL" == https://api.foojay.io/* ]]; then
+            JAVA_DOWNLOAD_URL="${PKG_CACHE_BASE}/api.foojay.io${JAVA_DOWNLOAD_URL#https://api.foojay.io}"
+          fi
+          curl --fail --location --silent --show-error \
+            "$JAVA_DOWNLOAD_URL" --output "$JAVA_PACKAGE"
+          tar --extract --gzip --strip-components=1 \
+            --file "$JAVA_PACKAGE" --directory "$JAVA_HOME"
+        else
+          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")
+        fi
+
+        echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
 
         echo "JAVA_HOME=$JAVA_HOME"
-        java -version
+        "$JAVA_HOME/bin/java" -version

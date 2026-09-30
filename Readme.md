@@ -220,12 +220,13 @@ Install Go SDK.
 
 ### `setup-java`
 
-Install OpenJDK.
+Install a Java distribution.
 
 ```yaml
 - uses: actions/forgejo/setup-java@v1
   with:
     java_version: "21"
+    distribution: "temurin"
 ```
 
 ---
