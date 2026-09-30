@@ -150,9 +150,15 @@ runs:
         DISABLE_LINTERS: ${{ env.MEGALINTER_DISABLE_LINTERS }}
 
         DISABLE_ERRORS: "true"
+        LOG_LEVEL: "ERROR"
+        LOG_FILE: "none"
+        PRINT_ALPACA: "false"
+        PRINT_ALL_FILES: "false"
+        SHOW_ELAPSED_TIME: "false"
+        SHOW_SKIPPED_LINTERS: "false"
         SARIF_REPORTER: "true"
         SARIF_REPORTER_FILE_NAME: "megalinter-report.sarif"
-        TEXT_REPORTER: "true"
+        TEXT_REPORTER: "false"
         GITHUB_COMMENT_REPORTER: "false"
         GITHUB_STATUS_REPORTER: "false"
         UPDATED_SOURCES_REPORTER: "false"
