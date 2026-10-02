@@ -21,9 +21,9 @@ steps:
 
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Intended for Linux runners and does not require `sudo`, a compiler, or a system package manager.
-- Reuses an already installed interpreter when it matches the requested major, minor, or exact version.
+- Reuses an already installed interpreter when it matches the requested major, minor, or exact version, including interpreters in standard locations such as `/usr/bin/python3` and `/usr/local/bin/python3`.
 - Resolves `3`, `3.11`, or an exact version such as `3.11.9` to the newest matching prebuilt release.
 - Requires `curl` and `tar` to already be available on the runner.
-- Installs into `$HOME/.python/<version>` and prepends its `bin` directory to `PATH`.
+- Installs into `$HOME/.python/<version>` for regular users, or `/usr/local/python/<version>` when running as root, and prepends its `bin` directory to `PATH`.
 - Downloads the Ubuntu 22.04 x64 or arm64 artifact from `actions/python-versions`.
 - When `PKG_CACHE` is set, downloads use `<PKG_CACHE>/github.com/actions/python-versions/releases/download`; otherwise they use GitHub directly.

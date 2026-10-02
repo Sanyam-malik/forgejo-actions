@@ -26,11 +26,11 @@ runs:
 
         VERSION_PARTS="${PYTHON_VERSION//[^.]}"
         if [ "${#VERSION_PARTS}" -eq 0 ]; then
-          PYTHON_CANDIDATES=(python3 python)
+          PYTHON_CANDIDATES=(python3 /usr/bin/python3 /usr/local/bin/python3 python /usr/bin/python /usr/local/bin/python)
         elif [ "${#VERSION_PARTS}" -eq 1 ]; then
-          PYTHON_CANDIDATES=("python${PYTHON_VERSION}" python3 python)
+          PYTHON_CANDIDATES=("python${PYTHON_VERSION}" "/usr/bin/python${PYTHON_VERSION}" "/usr/local/bin/python${PYTHON_VERSION}" python3 /usr/bin/python3 /usr/local/bin/python3 python /usr/bin/python /usr/local/bin/python)
         else
-          PYTHON_CANDIDATES=("python${PYTHON_VERSION%.*}" python3 python)
+          PYTHON_CANDIDATES=("python${PYTHON_VERSION%.*}" "/usr/bin/python${PYTHON_VERSION%.*}" "/usr/local/bin/python${PYTHON_VERSION%.*}" python3 /usr/bin/python3 /usr/local/bin/python3 python /usr/bin/python /usr/local/bin/python)
         fi
 
         matches_requested_version() {
@@ -45,11 +45,15 @@ runs:
         }
 
         for candidate in "${PYTHON_CANDIDATES[@]}"; do
-          if ! command -v "$candidate" >/dev/null 2>&1; then
+          if [ ! -x "$candidate" ] && ! command -v "$candidate" >/dev/null 2>&1; then
             continue
           fi
 
-          candidate_path="$(command -v "$candidate")"
+          if [[ "$candidate" = /* ]]; then
+            candidate_path="$candidate"
+          else
+            candidate_path="$(command -v "$candidate")"
+          fi
           candidate_version="$("$candidate_path" --version 2>&1 | sed -nE 's/^Python ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')"
           if [[ -n "$candidate_version" ]] && matches_requested_version "$candidate_version"; then
             PYTHON_BIN="$(readlink -f "$candidate_path")"
@@ -122,7 +126,12 @@ runs:
             ;;
         esac
 
-        PYTHON_HOME="$HOME/.python/$RESOLVED_VERSION"
+        if [ "$(id -u)" -eq 0 ] && [ -d /usr/local ] && [ -w /usr/local ]; then
+          PYTHON_HOME="/usr/local/python/$RESOLVED_VERSION"
+          echo "Running as root; installing Python system-wide at $PYTHON_HOME"
+        else
+          PYTHON_HOME="$HOME/.python/$RESOLVED_VERSION"
+        fi
         PYTHON_ARCHIVE="$(mktemp)"
         trap 'rm -f "$PYTHON_ARCHIVE"' EXIT
 
