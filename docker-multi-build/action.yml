@@ -14,8 +14,8 @@ inputs:
     description: Image name
     required: true
 
-  tag:
-    description: Image tag
+  tags:
+    description: Comma-separated image tags
     required: false
     default: latest
 
@@ -26,6 +26,11 @@ inputs:
 
   build_args:
     description: Additional docker build arguments
+    required: false
+    default: ""
+
+  registry_mirror:
+    description: BuildKit mirror for Docker Hub (defaults to PKG_CACHE/registry-1.docker.io when PKG_CACHE is set)
     required: false
     default: ""
 
@@ -53,7 +58,7 @@ inputs:
 
 outputs:
   image:
-    description: Fully resolved image reference embedded in the archive (registry/namespace/image:tag)
+    description: Comma-separated image references embedded in the archive
     value: ${{ steps.build.outputs.image }}
 
   supported_platforms:
@@ -71,9 +76,11 @@ runs:
         REGISTRY_INPUT: ${{ inputs.registry }}
         NAMESPACE_INPUT: ${{ inputs.namespace }}
         IMAGE_NAME_INPUT: ${{ inputs.image }}
-        TAG: ${{ inputs.tag }}
+        TAGS_INPUT: ${{ inputs.tags }}
         DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
         BUILD_ARGS: ${{ inputs.build_args }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
+        REGISTRY_MIRROR_INPUT: ${{ inputs.registry_mirror }}
         REQUESTED_PLATFORMS: ${{ inputs.platforms }}
         VALIDATE_PLATFORMS: ${{ inputs.validate_platforms }}
         DISABLE_PROCESS_SANDBOX: ${{ inputs.disable_process_sandbox }}
@@ -96,9 +103,18 @@ runs:
         IMAGE_NAME="${IMAGE_NAME#/}"
         IMAGE_NAME="${IMAGE_NAME%/}"
 
-        TAG="${TAG:-latest}"
-
         DOCKERFILE="${DOCKERFILE_INPUT}"
+        REGISTRY_MIRROR="${REGISTRY_MIRROR_INPUT}"
+        PKG_CACHE="${PKG_CACHE:-}"
+
+        if [[ -z "${REGISTRY_MIRROR}" && -n "${PKG_CACHE}" ]]; then
+          PKG_CACHE_BASE="${PKG_CACHE%/}"
+          case "${PKG_CACHE_BASE}" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://${PKG_CACHE_BASE}" ;;
+          esac
+          REGISTRY_MIRROR="${PKG_CACHE_BASE}/registry-1.docker.io"
+        fi
 
         # ------------------------------------------------------------
         # Validate inputs
@@ -118,8 +134,8 @@ runs:
           exit 1
         fi
 
-        if [[ -z "${TAG}" ]]; then
-          echo "::error::tag input is empty"
+        if [[ -z "${TAGS_INPUT}" ]]; then
+          echo "::error::tags input is empty"
           exit 1
         fi
 
@@ -139,12 +155,27 @@ runs:
         fi
 
         # ------------------------------------------------------------
-        # Resolve image reference
+        # Resolve image references
         #
         # Example:
         #   ghcr.io/my-org/my-app:1.2.3
         # ------------------------------------------------------------
-        IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+        IFS=',' read -ra TAG_LIST <<< "${TAGS_INPUT}"
+        IMAGE_REFS=()
+        for raw_tag in "${TAG_LIST[@]}"; do
+          tag="$(printf '%s' "${raw_tag}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "${tag}" ]]; then
+            echo "::error::tags contains an empty tag"
+            exit 1
+          fi
+          if [[ "${tag}" =~ [[:space:]] ]]; then
+            echo "::error::Invalid image tag: '${tag}'"
+            exit 1
+          fi
+          IMAGE_REFS+=( "${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${tag}" )
+        done
+
+        IMAGE="${IMAGE_REFS[0]}"
 
         # ------------------------------------------------------------
         # Derive OCI tarball filename from image reference
@@ -290,6 +321,13 @@ runs:
         fi
 
         BUILDER_NAME="build_${UUID}"
+        BUILDKITD_CONFIG=""
+
+        if [[ -n "${REGISTRY_MIRROR}" ]]; then
+          BUILDKITD_CONFIG="$(mktemp)"
+          printf '[registry."docker.io"]\n  mirrors = ["%s"]\n' "${REGISTRY_MIRROR}" > "${BUILDKITD_CONFIG}"
+          echo "Using BuildKit registry mirror: ${REGISTRY_MIRROR}"
+        fi
 
         # ------------------------------------------------------------
         # Cleanup
@@ -314,6 +352,10 @@ runs:
               echo "::warning::Failed to remove Buildx builder: ${BUILDER_NAME}"
           else
             echo "Buildx builder already removed: ${BUILDER_NAME}"
+          fi
+
+          if [[ -n "${BUILDKITD_CONFIG}" ]]; then
+            rm -f "${BUILDKITD_CONFIG}"
           fi
 
           echo "Buildx cleanup completed."
@@ -366,6 +408,10 @@ runs:
 
         if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" ]]; then
           CREATE_COMMAND+=( --buildkitd-flags '--oci-worker-no-process-sandbox' )
+        fi
+
+        if [[ -n "${BUILDKITD_CONFIG}" ]]; then
+          CREATE_COMMAND+=( --buildkitd-config "${BUILDKITD_CONFIG}" )
         fi
 
         "${CREATE_COMMAND[@]}" >/dev/null
@@ -428,10 +474,13 @@ runs:
           docker buildx build
           --builder "${BUILDER_NAME}"
           --platform "${SUPPORTED_PLATFORMS}"
-          --tag "${IMAGE}"
           --file "${DOCKERFILE}"
           --output "type=oci,dest=${OUTPUT_PATH}"
         )
+
+        for image_ref in "${IMAGE_REFS[@]}"; do
+          BUILD_COMMAND+=( --tag "${image_ref}" )
+        done
 
         if (( ${#EXTRA_BUILD_ARGS[@]} > 0 )); then
           BUILD_COMMAND+=( "${EXTRA_BUILD_ARGS[@]}" )
@@ -484,5 +533,6 @@ runs:
         # ------------------------------------------------------------
         # Action outputs
         # ------------------------------------------------------------
-        echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
+        IMAGE_OUTPUT="$(IFS=,; echo "${IMAGE_REFS[*]}")"
+        echo "image=${IMAGE_OUTPUT}" >> "${GITHUB_OUTPUT}"
         echo "supported_platforms=${SUPPORTED_PLATFORMS}" >> "${GITHUB_OUTPUT}"

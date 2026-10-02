@@ -46,6 +46,11 @@ inputs:
     required: false
     default: ""
 
+  registry_mirror:
+    description: BuildKit mirror for Docker Hub (defaults to PKG_CACHE/registry-1.docker.io when PKG_CACHE is set)
+    required: false
+    default: ""
+
 outputs:
   image:
     description: Full image reference
@@ -67,6 +72,8 @@ runs:
         PLATFORM_INPUT: ${{ inputs.platform }}
         DISABLE_PROCESS_SANDBOX: ${{ inputs.disable_process_sandbox }}
         BUILD_ARGS: ${{ inputs.build_args }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
+        REGISTRY_MIRROR_INPUT: ${{ inputs.registry_mirror }}
       run: |
         set -euo pipefail
 
@@ -87,6 +94,17 @@ runs:
         IMAGE_NAME="${IMAGE_NAME%/}"
 
         DOCKERFILE="${DOCKERFILE_INPUT}"
+        REGISTRY_MIRROR="${REGISTRY_MIRROR_INPUT}"
+        PKG_CACHE="${PKG_CACHE:-}"
+
+        if [[ -z "${REGISTRY_MIRROR}" && -n "${PKG_CACHE}" ]]; then
+          PKG_CACHE_BASE="${PKG_CACHE%/}"
+          case "${PKG_CACHE_BASE}" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://${PKG_CACHE_BASE}" ;;
+          esac
+          REGISTRY_MIRROR="${PKG_CACHE_BASE}/registry-1.docker.io"
+        fi
 
         # ------------------------------------------------------------
         # Resolve target platform
@@ -247,11 +265,18 @@ runs:
         # ------------------------------------------------------------
         BUILDER_ARGS=()
         CREATED_BUILDER=""
+        BUILDKITD_CONFIG=""
 
-        if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" ]]; then
+        if [[ -n "${REGISTRY_MIRROR}" ]]; then
+          BUILDKITD_CONFIG="$(mktemp)"
+          printf '[registry."docker.io"]\n  mirrors = ["%s"]\n' "${REGISTRY_MIRROR}" > "${BUILDKITD_CONFIG}"
+          echo "Using BuildKit registry mirror: ${REGISTRY_MIRROR}"
+        fi
+
+        if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" || -n "${BUILDKITD_CONFIG}" ]]; then
           echo ""
           echo "============================================================"
-          echo "Creating dedicated builder (process sandbox disabled)"
+          echo "Creating dedicated BuildKit builder"
           echo "============================================================"
 
           if command -v uuidgen >/dev/null 2>&1; then
@@ -264,11 +289,21 @@ runs:
 
           CREATED_BUILDER="no_sandbox_${UUID}"
 
-          docker buildx create \
-            --name "${CREATED_BUILDER}" \
-            --driver docker-container \
-            --buildkitd-flags '--oci-worker-no-process-sandbox' \
-            >/dev/null
+          CREATE_COMMAND=(
+            docker buildx create
+            --name "${CREATED_BUILDER}"
+            --driver docker-container
+          )
+
+          if [[ "${DISABLE_PROCESS_SANDBOX}" == "true" ]]; then
+            CREATE_COMMAND+=( --buildkitd-flags '--oci-worker-no-process-sandbox' )
+          fi
+
+          if [[ -n "${BUILDKITD_CONFIG}" ]]; then
+            CREATE_COMMAND+=( --buildkitd-config "${BUILDKITD_CONFIG}" )
+          fi
+
+          "${CREATE_COMMAND[@]}" >/dev/null
 
           echo "Dedicated builder created: ${CREATED_BUILDER}"
 
@@ -297,6 +332,10 @@ runs:
               "${CREATED_BUILDER}" \
               >/dev/null 2>&1 || \
               echo "::warning::Failed to remove dedicated builder: ${CREATED_BUILDER}"
+          fi
+
+          if [[ -n "${BUILDKITD_CONFIG}" ]]; then
+            rm -f "${BUILDKITD_CONFIG}"
           fi
 
           if docker buildx version >/dev/null 2>&1; then

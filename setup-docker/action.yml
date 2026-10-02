@@ -1,11 +1,5 @@
 name: Setup Docker
-description: Installs Docker (if missing) and optionally configures a registry mirror
-
-inputs:
-  registry_mirror:
-    description: Registry mirror URL (e.g. https://mirror.gcr.io)
-    required: false
-    default: ""
+description: Installs Docker (if missing) and ensures the Docker daemon is running
 
 runs:
   using: composite
@@ -14,7 +8,6 @@ runs:
       shell: bash
       env:
         PKG_CACHE: ${{ env.PKG_CACHE }}
-        REGISTRY_MIRROR: ${{ inputs.registry_mirror }}
       run: |
         set -euo pipefail
 
@@ -26,11 +19,6 @@ runs:
             *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
           esac
           PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
-
-          if [ -z "$REGISTRY_MIRROR" ]; then
-            REGISTRY_MIRROR="${PKG_CACHE_BASE}/registry-1.docker.io"
-            echo "Using pkg-cache proxy for Docker Hub: $REGISTRY_MIRROR"
-          fi
         fi
 
         # Handle sudo
@@ -114,37 +102,6 @@ runs:
         # Fix permissions (best-effort)
         if [ -n "${USER:-}" ]; then
           $SUDO usermod -aG docker "$USER" || true
-        fi
-
-        # ✅ Configure registry mirror (EOF-safe)
-        if [ -n "$REGISTRY_MIRROR" ]; then
-          echo "Configuring registry mirror..."
-
-          $SUDO mkdir -p /etc/docker
-
-          # 🔥 No heredoc → no YAML bugs
-          printf '{\n  "registry-mirrors": ["%s"]\n}\n' "$REGISTRY_MIRROR" | $SUDO tee /etc/docker/daemon.json > /dev/null
-
-          echo "Restarting Docker (clean)..."
-
-          # 🔥 Critical: kill old daemon completely
-          $SUDO pkill dockerd || true
-          sleep 2
-
-          # start fresh daemon with new config
-          $SUDO dockerd > /tmp/dockerd.log 2>&1 &
-          sleep 5
-
-          # ✅ verify mirror is active
-          if docker info | grep -q "$REGISTRY_MIRROR"; then
-            echo "Registry mirror applied ✅"
-          else
-            echo "Registry mirror NOT applied ❌"
-            docker info
-            echo "===== dockerd logs ====="
-            cat /tmp/dockerd.log || true
-            exit 1
-          fi
         fi
 
         echo "Docker version:"
