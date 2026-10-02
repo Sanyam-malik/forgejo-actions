@@ -440,6 +440,7 @@ should use `setup-cache`.
 * **`get-latest-tag`**: Fetch the latest tag from any supported provider using git.
 * **`get-release`**: Fetch a selected release (or the latest release by default).
 * **`get-tag`**: Fetch a selected tag (or the latest tag by default).
+* **`create-release`**: Create or update a git tag and its release through GitHub, Forgejo, or Gitea APIs.
 * **`inject-credentials`**: Inject credentials into configuration files.
 * **`set-image`**: Format image reference names and namespaces.
 

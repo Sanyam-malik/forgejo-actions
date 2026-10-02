@@ -1,0 +1,80 @@
+name: Create Tag and Release
+description: Create or update a git tag and its release through a GitHub-compatible API
+
+inputs:
+  repository:
+    description: Repository in owner/name form or a repository URL
+    required: false
+    default: ${{ github.repository }}
+  tag:
+    description: Tag name to create
+    required: true
+  name:
+    description: Release name; defaults to the tag
+    required: false
+    default: ""
+  body_file:
+    description: File containing the release description
+    required: false
+    default: RELEASE.md
+  placeholders:
+    description: JSON object replacing {{KEY}} placeholders in the release body
+    required: false
+    default: "{}"
+  target_commitish:
+    description: Commit SHA or branch for the tag; defaults to the current commit
+    required: false
+    default: ${{ github.sha }}
+  token:
+    description: Token with permission to create tags and releases
+    required: false
+    default: ${{ github.token }}
+  api_url:
+    description: API base URL override
+    required: false
+    default: ${{ github.api_url }}
+  force_tag:
+    description: Move an existing tag to target_commitish
+    required: false
+    default: "false"
+  draft:
+    description: Create the release as a draft
+    required: false
+    default: "false"
+  prerelease:
+    description: Mark the release as a prerelease
+    required: false
+    default: "false"
+outputs:
+  tag:
+    description: Created tag
+    value: ${{ steps.create.outputs.tag }}
+  release_id:
+    description: Release identifier
+    value: ${{ steps.create.outputs.release_id }}
+  release_url:
+    description: Web URL of the release
+    value: ${{ steps.create.outputs.release_url }}
+
+runs:
+  using: composite
+  steps:
+    - id: create
+      name: Create tag and release
+      shell: bash
+      env:
+        REPOSITORY_INPUT: ${{ inputs.repository }}
+        TAG_INPUT: ${{ inputs.tag }}
+        NAME_INPUT: ${{ inputs.name }}
+        BODY_FILE_INPUT: ${{ inputs.body_file }}
+        PLACEHOLDERS_INPUT: ${{ inputs.placeholders }}
+        TARGET_INPUT: ${{ inputs.target_commitish }}
+        TOKEN_INPUT: ${{ inputs.token }}
+        API_URL_INPUT: ${{ inputs.api_url }}
+        SERVER_URL: ${{ github.server_url }}
+        FORCE_TAG_INPUT: ${{ inputs.force_tag }}
+        DRAFT_INPUT: ${{ inputs.draft }}
+        PRERELEASE_INPUT: ${{ inputs.prerelease }}
+      run: |
+        set -euo pipefail
+        bash "${{ github.action_path }}/scripts/create-release.sh"
