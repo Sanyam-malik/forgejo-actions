@@ -1,9 +1,9 @@
 name: Setup Python
-description: Install Python and configure PYTHON_HOME on multiple Linux distributions
+description: Install a prebuilt Python distribution from actions/python-versions
 
 inputs:
   python_version:
-    description: Python version to install (for example 3, 3.11, 3.12)
+    description: Python version to install (for example 3, 3.11, 3.12, 3.12.7)
     required: false
     default: "3"
 
@@ -12,183 +12,101 @@ runs:
   steps:
     - name: Install Python
       shell: bash
+      env:
+        PYTHON_VERSION: ${{ inputs.python_version }}
+        PKG_CACHE: ${{ env.PKG_CACHE }}
       run: |
-        set -e
+        set -euo pipefail
 
-        PYTHON_VERSION="${{ inputs.python_version }}"
-
-        if ! [[ "$PYTHON_VERSION" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        if ! [[ "$PYTHON_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
           echo "Invalid Python version: $PYTHON_VERSION"
-          echo "Expected format: 3, 3.11, 3.12, etc."
+          echo "Expected format: 3, 3.11, 3.12, or 3.12.7"
           exit 1
         fi
 
-        PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
+        for command in curl tar; do
+          if ! command -v "$command" >/dev/null 2>&1; then
+            echo "Required build tool not found: $command"
+            echo "Install the required archive tools on the runner before using setup-python."
+            exit 1
+          fi
+        done
 
-        if [[ "$PYTHON_VERSION" == *.* ]]; then
-          PYTHON_MINOR="${PYTHON_VERSION#*.}"
-          PYTHON_PACKAGE_VERSION="${PYTHON_MAJOR}.${PYTHON_MINOR}"
+        PKG_CACHE="${PKG_CACHE:-}"
+        if [ -n "$PKG_CACHE" ]; then
+          PKG_CACHE_BASE="$PKG_CACHE"
+          case "$PKG_CACHE_BASE" in
+            http://*|https://*) ;;
+            *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
+          esac
+          PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+          PYTHON_BASE_URL="${PKG_CACHE_BASE}/github.com/actions/python-versions/releases/download"
+          PYTHON_API_URL="${PKG_CACHE_BASE}/api.github.com/repos/actions/python-versions/releases?per_page=100"
+          echo "Using pkg-cache mirror for actions/python-versions: $PYTHON_BASE_URL"
         else
-          PYTHON_MINOR=""
-          PYTHON_PACKAGE_VERSION="${PYTHON_MAJOR}"
+          PYTHON_BASE_URL="https://github.com/actions/python-versions/releases/download"
+          PYTHON_API_URL="https://api.github.com/repos/actions/python-versions/releases?per_page=100"
+          echo "Using actions/python-versions prebuilt distributions"
         fi
 
-        echo "Requested Python version: $PYTHON_VERSION"
-
-        # -------------------------------------------------------
-        # Determine Python executable/package name
-        # -------------------------------------------------------
-
-        if [ -n "$PYTHON_MINOR" ]; then
-          PYTHON_BIN="python${PYTHON_PACKAGE_VERSION}"
+        VERSION_PARTS="${PYTHON_VERSION//[^.]}"
+        if [ "${#VERSION_PARTS}" -eq 2 ]; then
+          VERSION_PATTERN="^${PYTHON_VERSION//./\\.}-[0-9]+$"
+        elif [ "${#VERSION_PARTS}" -eq 1 ]; then
+          VERSION_PATTERN="^${PYTHON_VERSION//./\\.}\\.[0-9]+-[0-9]+$"
         else
-          PYTHON_BIN="python${PYTHON_MAJOR}"
+          VERSION_PATTERN="^${PYTHON_VERSION//./\\.}\\.[0-9]+\\.[0-9]+-[0-9]+$"
         fi
 
-        # -------------------------------------------------------
-        # APT
-        # -------------------------------------------------------
-
-        if command -v apt-get >/dev/null 2>&1; then
-          echo "Detected APT system"
-
-          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-            echo "$PYTHON_BIN already installed"
-
-          else
-            sudo apt-get update
-
-            if [ -n "$PYTHON_MINOR" ]; then
-              sudo apt-get install -y \
-                "python${PYTHON_PACKAGE_VERSION}" \
-                "python${PYTHON_PACKAGE_VERSION}-venv" \
-                curl \
-                unzip
-            else
-              sudo apt-get install -y \
-                "python${PYTHON_MAJOR}" \
-                "python${PYTHON_MAJOR}-venv" \
-                curl \
-                unzip
-            fi
-          fi
-
-        # -------------------------------------------------------
-        # DNF
-        # -------------------------------------------------------
-
-        elif command -v dnf >/dev/null 2>&1; then
-          echo "Detected DNF system"
-
-          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-            echo "$PYTHON_BIN already installed"
-
-          elif [ -n "$PYTHON_MINOR" ]; then
-            sudo dnf install -y \
-              "python${PYTHON_PACKAGE_VERSION}" \
-              curl \
-              unzip
-
-          else
-            sudo dnf install -y \
-              "python${PYTHON_MAJOR}" \
-              curl \
-              unzip
-          fi
-
-        # -------------------------------------------------------
-        # YUM
-        # -------------------------------------------------------
-
-        elif command -v yum >/dev/null 2>&1; then
-          echo "Detected YUM system"
-
-          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-            echo "$PYTHON_BIN already installed"
-
-          elif [ -n "$PYTHON_MINOR" ]; then
-            sudo yum install -y \
-              "python${PYTHON_PACKAGE_VERSION}" \
-              curl \
-              unzip
-
-          else
-            sudo yum install -y \
-              "python${PYTHON_MAJOR}" \
-              curl \
-              unzip
-          fi
-
-        # -------------------------------------------------------
-        # APK / Alpine
-        # -------------------------------------------------------
-
-        elif command -v apk >/dev/null 2>&1; then
-          echo "Detected Alpine system"
-
-          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-            echo "$PYTHON_BIN already installed"
-
-          elif [ -n "$PYTHON_MINOR" ]; then
-            sudo apk add --no-cache \
-              "python${PYTHON_PACKAGE_VERSION}" \
-              curl \
-              unzip
-
-          else
-            sudo apk add --no-cache \
-              "python${PYTHON_MAJOR}" \
-              curl \
-              unzip
-          fi
-
-        # -------------------------------------------------------
-        # Zypper
-        # -------------------------------------------------------
-
-        elif command -v zypper >/dev/null 2>&1; then
-          echo "Detected Zypper system"
-
-          if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-            echo "$PYTHON_BIN already installed"
-
-          elif [ -n "$PYTHON_MINOR" ]; then
-            sudo zypper install -y \
-              "python${PYTHON_PACKAGE_VERSION}" \
-              curl \
-              unzip
-
-          else
-            sudo zypper install -y \
-              "python${PYTHON_MAJOR}" \
-              curl \
-              unzip
-          fi
-
-        else
-          echo "Unsupported distribution"
+        RELEASE_TAG="$(
+          curl --fail --location --silent --show-error \
+            "$PYTHON_API_URL" |
+            sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p' |
+            grep -E "$VERSION_PATTERN" |
+            sort -V |
+            tail -n 1
+        )"
+        if [ -z "$RELEASE_TAG" ]; then
+          echo "Could not find a prebuilt Python release matching: $PYTHON_VERSION"
           exit 1
         fi
 
-        # -------------------------------------------------------
-        # Verify installation
-        # -------------------------------------------------------
+        RESOLVED_VERSION="${RELEASE_TAG%-*}"
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64) ARCH="x64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *)
+            echo "Unsupported architecture: $(uname -m)"
+            exit 1
+            ;;
+        esac
 
-        if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-          echo "ERROR: $PYTHON_BIN was not found after installation"
+        PYTHON_HOME="$HOME/.python/$RESOLVED_VERSION"
+        PYTHON_ARCHIVE="$(mktemp)"
+        trap 'rm -f "$PYTHON_ARCHIVE"' EXIT
+
+        ASSET_NAME="python-${RESOLVED_VERSION}-linux-22.04-${ARCH}.tar.gz"
+        DOWNLOAD_URL="${PYTHON_BASE_URL}/${RELEASE_TAG}/${ASSET_NAME}"
+        echo "Downloading $DOWNLOAD_URL"
+        curl --fail --location --retry 5 --retry-delay 5 \
+          --silent --show-error "$DOWNLOAD_URL" --output "$PYTHON_ARCHIVE"
+
+        mkdir -p "$PYTHON_HOME"
+        tar --extract --gzip --file "$PYTHON_ARCHIVE" --directory "$PYTHON_HOME"
+        PYTHON_BIN="$PYTHON_HOME/bin/python${RESOLVED_VERSION%.*}"
+        if [ ! -x "$PYTHON_BIN" ]; then
+          echo "Python executable was not found in the downloaded archive: $PYTHON_BIN"
           exit 1
         fi
-
-        PYTHON_BIN="$(command -v "$PYTHON_BIN")"
-
-        PYTHON_HOME="$(dirname "$(dirname "$(readlink -f "$PYTHON_BIN")")")"
 
         echo "PYTHON_HOME=$PYTHON_HOME" >> "$GITHUB_ENV"
         echo "$PYTHON_HOME/bin" >> "$GITHUB_PATH"
+        echo "PATH=$PYTHON_HOME/bin:$PATH" >> "$GITHUB_ENV"
+        export PATH="$PYTHON_HOME/bin:$PATH"
 
-        echo
         echo "Python installed successfully"
-        echo "Requested version: $PYTHON_VERSION"
+        echo "Requested version: $PYTHON_VERSION (resolved to $RESOLVED_VERSION)"
         echo "Python executable: $PYTHON_BIN"
         echo "PYTHON_HOME: $PYTHON_HOME"
 
