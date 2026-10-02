@@ -103,7 +103,9 @@ runs:
         echo "PYTHON_HOME=$PYTHON_HOME" >> "$GITHUB_ENV"
         echo "$PYTHON_HOME/bin" >> "$GITHUB_PATH"
         echo "PATH=$PYTHON_HOME/bin:$PATH" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$PYTHON_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
         export PATH="$PYTHON_HOME/bin:$PATH"
+        export LD_LIBRARY_PATH="$PYTHON_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
         echo "Python installed successfully"
         echo "Requested version: $PYTHON_VERSION (resolved to $RESOLVED_VERSION)"
