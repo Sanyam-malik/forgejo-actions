@@ -21,6 +21,7 @@ steps:
 
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Intended for Linux runners and does not require `sudo`, a compiler, or a system package manager.
+- Reuses an already installed interpreter when it matches the requested major, minor, or exact version.
 - Resolves `3`, `3.11`, or an exact version such as `3.11.9` to the newest matching prebuilt release.
 - Requires `curl` and `tar` to already be available on the runner.
 - Installs into `$HOME/.python/<version>` and prepends its `bin` directory to `PATH`.

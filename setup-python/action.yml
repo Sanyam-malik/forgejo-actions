@@ -24,9 +24,50 @@ runs:
           exit 1
         fi
 
+        VERSION_PARTS="${PYTHON_VERSION//[^.]}"
+        if [ "${#VERSION_PARTS}" -eq 0 ]; then
+          PYTHON_CANDIDATES=(python3 python)
+        elif [ "${#VERSION_PARTS}" -eq 1 ]; then
+          PYTHON_CANDIDATES=("python${PYTHON_VERSION}" python3 python)
+        else
+          PYTHON_CANDIDATES=("python${PYTHON_VERSION%.*}" python3 python)
+        fi
+
+        matches_requested_version() {
+          local version="$1"
+          if [ "${#VERSION_PARTS}" -eq 2 ]; then
+            [[ "$version" == "$PYTHON_VERSION" ]]
+          elif [ "${#VERSION_PARTS}" -eq 1 ]; then
+            [[ "$version" == "$PYTHON_VERSION".* ]]
+          else
+            [[ "$version" == "$PYTHON_VERSION".* ]]
+          fi
+        }
+
+        for candidate in "${PYTHON_CANDIDATES[@]}"; do
+          if ! command -v "$candidate" >/dev/null 2>&1; then
+            continue
+          fi
+
+          candidate_path="$(command -v "$candidate")"
+          candidate_version="$("$candidate_path" --version 2>&1 | sed -nE 's/^Python ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')"
+          if [[ -n "$candidate_version" ]] && matches_requested_version "$candidate_version"; then
+            PYTHON_BIN="$(readlink -f "$candidate_path")"
+            PYTHON_HOME="$(dirname "$(dirname "$PYTHON_BIN")")"
+            echo "Python $candidate_version already installed at $PYTHON_BIN"
+            echo "PYTHON_HOME=$PYTHON_HOME" >> "$GITHUB_ENV"
+            echo "$PYTHON_HOME/bin" >> "$GITHUB_PATH"
+            echo "PATH=$PYTHON_HOME/bin:$PATH" >> "$GITHUB_ENV"
+            echo "Python executable: $PYTHON_BIN"
+            echo "PYTHON_HOME: $PYTHON_HOME"
+            "$PYTHON_BIN" --version
+            exit 0
+          fi
+        done
+
         for command in curl tar; do
           if ! command -v "$command" >/dev/null 2>&1; then
-            echo "Required build tool not found: $command"
+            echo "Required archive tool not found: $command"
             echo "Install the required archive tools on the runner before using setup-python."
             exit 1
           fi
@@ -49,7 +90,6 @@ runs:
           echo "Using actions/python-versions prebuilt distributions"
         fi
 
-        VERSION_PARTS="${PYTHON_VERSION//[^.]}"
         if [ "${#VERSION_PARTS}" -eq 2 ]; then
           VERSION_PATTERN="^${PYTHON_VERSION//./\\.}-[0-9]+$"
         elif [ "${#VERSION_PARTS}" -eq 1 ]; then
