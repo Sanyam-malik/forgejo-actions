@@ -22,10 +22,11 @@ steps:
 | `registry` | Registry URL | Yes | — |
 | `namespace` | Registry namespace | Yes | — |
 | `image` | Image name | Yes | — |
-| `tag` | Image tag | No | `latest` |
+| `tags` | Comma-separated image tags | No | `latest` |
 
 ## Behavior and requirements
 
 - Runs as a vendor-neutral composite action on the current CI runner.
 - Required inputs must be supplied; they have no declared defaults.
 - Docker operations require a runner with Docker and the permissions needed to build, load, log in, or push images as applicable.
+- Set `tags` to one tag (`latest`) or multiple comma-separated tags (`1.2.3,latest`); each tag is pushed separately.

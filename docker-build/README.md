@@ -22,7 +22,7 @@ steps:
 | `registry` | Registry URL | Yes | — |
 | `namespace` | Registry namespace | Yes | — |
 | `image` | Image name | Yes | — |
-| `tag` | Image tag | No | `latest` |
+| `tags` | Comma-separated image tags | No | `latest` |
 | `dockerfile` | Path to the Dockerfile to build | No | `Dockerfile` |
 | `platform` | Target platform (e.g. linux/amd64). Defaults to the runner's native architecture, preventing an accidental fall-through to an emulated platform. | No | `""` |
 | `disable_process_sandbox` | Create and use a dedicated buildx builder with BuildKit's process sandbox disabled (--oci-worker-no-process-sandbox). Required for tools that write out and directly execute native helper binaries during the build (e.g. GraalVM native-image), which BuildKit's default process sandbox blocks. Only enable this for builds that specifically need it; leave disabled for normal builds so they keep the default hardened sandbox. | No | `false` |
@@ -40,4 +40,5 @@ steps:
 - Required inputs must be supplied; they have no declared defaults.
 - Docker operations require a runner with Docker and the permissions needed to build, load, log in, or push images as applicable.
 - The build writes an OCI archive in the workspace; it does not push the image unless the action description says otherwise.
+- Set `tags` to one tag (`latest`) or multiple comma-separated tags (`1.2.3,latest`); all tags are applied to the exported image.
 - To read outputs, assign an `id` to the action step and use `${{ steps.<step-id>.outputs.<output-name> }}`.

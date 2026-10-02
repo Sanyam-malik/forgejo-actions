@@ -14,8 +14,8 @@ inputs:
     description: Image name
     required: true
 
-  tag:
-    description: Image tag
+  tags:
+    description: Comma-separated image tags
     required: false
     default: latest
 
@@ -28,7 +28,7 @@ runs:
         REGISTRY: ${{ inputs.registry }}
         NAMESPACE: ${{ inputs.namespace }}
         IMAGE_NAME: ${{ inputs.image }}
-        TAG: ${{ inputs.tag }}
+        TAGS_INPUT: ${{ inputs.tags }}
       run: |
         set -euo pipefail
 
@@ -40,12 +40,32 @@ runs:
         REGISTRY="${REGISTRY%/}"
 
         # ------------------------------------------------------------
-        # Build image reference
+        # Build image references
         # ------------------------------------------------------------
-        IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+        if [[ -z "${TAGS_INPUT}" ]]; then
+          echo "::error::tags input is empty"
+          exit 1
+        fi
 
-        echo "Image reference:"
-        echo "  ${IMAGE_REF}"
+        IFS=',' read -ra TAG_LIST <<< "${TAGS_INPUT}"
+        IMAGE_REFS=()
+        for raw_tag in "${TAG_LIST[@]}"; do
+          tag="$(printf '%s' "${raw_tag}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "${tag}" ]]; then
+            echo "::error::tags contains an empty tag"
+            exit 1
+          fi
+          if [[ "${tag}" =~ [[:space:]] ]]; then
+            echo "::error::Invalid image tag: '${tag}'"
+            exit 1
+          fi
+          IMAGE_REFS+=( "${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${tag}" )
+        done
+
+        IMAGE_REF="${IMAGE_REFS[0]}"
+
+        echo "Image references:"
+        printf '  %s\n' "${IMAGE_REFS[@]}"
 
         # ------------------------------------------------------------
         # Resolve OCI tar filename
@@ -108,18 +128,23 @@ runs:
           "${IMAGE_REF}" \
           --format '{{.Id}}'
 
+        for image_ref in "${IMAGE_REFS[@]:1}"; do
+          docker tag "${IMAGE_REF}" "${image_ref}"
+        done
+
         # ------------------------------------------------------------
         # Push image
         # ------------------------------------------------------------
         echo ""
-        echo "Pushing image to registry..."
-        echo "  ${IMAGE_REF}"
-
-        docker push "${IMAGE_REF}"
+        echo "Pushing images to registry..."
+        for image_ref in "${IMAGE_REFS[@]}"; do
+          echo "  ${image_ref}"
+          docker push "${image_ref}"
+        done
 
         echo ""
-        echo "Image pushed successfully:"
-        echo "  ${IMAGE_REF}"
+        echo "Images pushed successfully:"
+        printf '  %s\n' "${IMAGE_REFS[@]}"
 
         # ------------------------------------------------------------
         # Cleanup
@@ -127,7 +152,7 @@ runs:
         echo ""
         echo "Removing local Docker image to free space..."
 
-        docker rmi "${IMAGE_REF}" || true
+        docker rmi "${IMAGE_REFS[@]}" || true
 
         echo "Removing OCI tarball..."
 

@@ -14,8 +14,8 @@ inputs:
     description: Image name
     required: true
 
-  tag:
-    description: Image tag
+  tags:
+    description: Comma-separated image tags
     required: false
     default: latest
 
@@ -62,7 +62,7 @@ runs:
         REGISTRY_INPUT: ${{ inputs.registry }}
         NAMESPACE_INPUT: ${{ inputs.namespace }}
         IMAGE_INPUT: ${{ inputs.image }}
-        TAG: ${{ inputs.tag }}
+        TAGS_INPUT: ${{ inputs.tags }}
         DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
         PLATFORM_INPUT: ${{ inputs.platform }}
         DISABLE_PROCESS_SANDBOX: ${{ inputs.disable_process_sandbox }}
@@ -158,8 +158,8 @@ runs:
           exit 1
         fi
 
-        if [[ -z "${TAG}" ]]; then
-          echo "::error::tag input is empty"
+        if [[ -z "${TAGS_INPUT}" ]]; then
+          echo "::error::tags input is empty"
           exit 1
         fi
 
@@ -176,13 +176,28 @@ runs:
         # ------------------------------------------------------------
         # Build image reference
         # ------------------------------------------------------------
-        IMAGE_REF="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${TAG}"
+        IFS=',' read -ra TAG_LIST <<< "${TAGS_INPUT}"
+        IMAGE_REFS=()
+        for raw_tag in "${TAG_LIST[@]}"; do
+          tag="$(printf '%s' "${raw_tag}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "${tag}" ]]; then
+            echo "::error::tags contains an empty tag"
+            exit 1
+          fi
+          if [[ "${tag}" =~ [[:space:]] ]]; then
+            echo "::error::Invalid image tag: '${tag}'"
+            exit 1
+          fi
+          IMAGE_REFS+=( "${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${tag}" )
+        done
+
+        IMAGE_REF="${IMAGE_REFS[0]}"
 
         echo "============================================================"
         echo "Docker OCI Export"
         echo "============================================================"
-        echo "Image reference:"
-        echo "  ${IMAGE_REF}"
+        echo "Image references:"
+        printf '  %s\n' "${IMAGE_REFS[@]}"
         echo "Dockerfile:"
         echo "  ${DOCKERFILE}"
         echo "Platform:"
@@ -363,11 +378,14 @@ runs:
 
         BUILD_COMMAND=(
           docker buildx build
-          --tag "${IMAGE_REF}"
           --file "${DOCKERFILE}"
           --platform "${PLATFORM}"
           --output "type=oci,dest=${OUTPUT}"
         )
+
+        for image_ref in "${IMAGE_REFS[@]}"; do
+          BUILD_COMMAND+=( --tag "${image_ref}" )
+        done
 
         if (( ${#BUILDER_ARGS[@]} > 0 )); then
           BUILD_COMMAND+=( "${BUILDER_ARGS[@]}" )
@@ -403,7 +421,8 @@ runs:
         echo "============================================================"
         echo "OCI image created successfully"
         echo "============================================================"
-        echo "Image: ${IMAGE_REF}"
+        echo "Images:"
+        printf '  %s\n' "${IMAGE_REFS[@]}"
         echo "File:  ${OUTPUT}"
         echo "Size:  ${SIZE}"
         echo "============================================================"
@@ -411,4 +430,5 @@ runs:
         # ------------------------------------------------------------
         # Outputs
         # ------------------------------------------------------------
-        echo "image=${IMAGE_REF}" >> "${GITHUB_OUTPUT}"
+        IMAGE_OUTPUT="$(IFS=,; echo "${IMAGE_REFS[*]}")"
+        echo "image=${IMAGE_OUTPUT}" >> "${GITHUB_OUTPUT}"
