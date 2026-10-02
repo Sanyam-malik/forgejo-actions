@@ -26,6 +26,11 @@ runs:
             *) PKG_CACHE_BASE="https://$PKG_CACHE_BASE" ;;
           esac
           PKG_CACHE_BASE="${PKG_CACHE_BASE%/}"
+
+          if [ -z "$REGISTRY_MIRROR" ]; then
+            REGISTRY_MIRROR="${PKG_CACHE_BASE}/registry-1.docker.io"
+            echo "Using pkg-cache proxy for Docker Hub: $REGISTRY_MIRROR"
+          fi
         fi
 
         # Handle sudo
